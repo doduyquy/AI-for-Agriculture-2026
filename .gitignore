@@ -1,0 +1,13 @@
+# Data & training artifacts
+dataset/
+checkpoints/
+
+# Weights & Biases logs
+wandb/
+**/wandb/
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
