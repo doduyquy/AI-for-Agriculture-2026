@@ -1,0 +1,726 @@
+================================================================================
+GIẢI THÍCH CHI TIẾT KIẾN TRÚC MODEL - PIPELINEV1_STAGE1
+================================================================================
+
+📋 MỤC LỤC:
+1. Tổng quan chiến lược Stage 1
+2. Kiến trúc model chi tiết
+3. Lý do thiết kế từng thành phần
+4. Chiến lược training
+5. Hyperparameters và lý do chọn
+6. Augmentation strategy
+7. Loss function và class balancing
+
+================================================================================
+1. TỔNG QUAN CHIẾN LƯỢC STAGE 1
+================================================================================
+
+🎯 BỐI CẢNH:
+   - Dataset nhỏ: Chỉ ~200 samples/class (tổng ~600 samples)
+   - 3 loại dữ liệu: RGB (3 bands), MS (5 bands), HS (125 bands)
+   - 3 classes: Health, Rust, Other
+   - Mục tiêu: Train ổn định, tránh overfitting, kiểm chứng pipeline
+
+🎯 CHIẾN LƯỢC:
+   ✅ Đơn giản hóa kiến trúc (bỏ các module phức tạp)
+   ✅ Freeze pretrained backbone (ResNet18) để tận dụng ImageNet knowledge
+   ✅ Chỉ train các module spectral (MS/HS) và fusion
+   ✅ Light augmentation (tránh học noise thay vì pattern thực)
+   ✅ Class balancing (tránh bias về class đông nhất)
+   ✅ Early stopping aggressive (tránh overfit)
+
+================================================================================
+2. KIẾN TRÚC MODEL CHI TIẾT
+================================================================================
+
+📐 LUỒNG DỮ LIỆU:
+
+RGB (3, 224, 224) 
+    ↓
+[ResNet18 FROZEN] → Feature maps (512, 7, 7) = F_rgb
+                      ↓
+                      ↓ (Đợi fusion)
+                      ↓
+
+MS (5, 224, 224)
+    ↓
+[MS Encoder] → Feature maps (128, 7, 7) = F_ms
+    ↓                                        ↓
+    ↓                                        ↓
+    ↓                                        ↓
+HS (125, 224, 224)                          ↓
+    ↓                                        ↓
+[HS Encoder] → Feature maps (128, 7, 7) = F_hs
+                                            ↓
+                                            ↓
+    ┌───────────────────────────────────────┘
+    ↓
+[Spectral Attention Fusion]
+    F_ms (128) + F_hs (128) → F_spec (256, 7, 7)
+    ↓
+[Projection 256→512] → F_spec (512, 7, 7)
+    ↓
+    ├────────────────┐
+    ↓                ↓
+F_rgb (512)     F_spec (512)
+    ↓                ↓
+    └────────┬───────┘
+             ↓
+[Context Gated Fusion] → F_fused (512, 7, 7)
+             ↓
+[Classification Head]
+             ↓
+    Logits (batch, 3)
+
+
+📊 CHI TIẾT CÁC MODULE:
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ A. RGB BRANCH - RESNET18 (FROZEN)                                    │
+├──────────────────────────────────────────────────────────────────────┤
+│ Input:  RGB (batch, 3, 224, 224)                                     │
+│ Model:  ResNet18 pretrained on ImageNet                              │
+│ Output: Feature maps (batch, 512, 7, 7)                              │
+│                                                                       │
+│ 🔒 FROZEN - Không train, chỉ extract features                        │
+│                                                                       │
+│ Lý do:                                   8 đã học được texture,                              │
+│  ✓ ResNet1edges, patterns từ ImageNet        │
+│  ✓ Dataset quá nhỏ (600 samples) không đủ để train lại backbone     │
+│  ✓ Tránh catastrophic forgetting (mất kiến thức pretrain)            │
+│  ✓ Giảm số parameters cần train → giảm overfitting                  │
+│  ✓ Ổn định gradient (không bị exploding/vanishing từ deep network)  │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ B. MS ENCODER (TRAINABLE)                                            │
+├──────────────────────────────────────────────────────────────────────┤
+│ Input:  MS (batch, 5, 224, 224)                                      │
+│                                                                       │
+│ Architecture:                                                         │
+│   Conv2d(5→32, k=3, p=1) → BN → ReLU → MaxPool(2)                   │
+│   → (32, 112, 112)                                                   │
+│                                                                       │
+│   Conv2d(32→64, k=3, p=1) → BN → ReLU → MaxPool(2)                  │
+│   → (64, 56, 56)                                                     │
+│                                                                       │
+│   Conv2d(64→128, k=3, p=1) → BN → ReLU → AdaptiveAvgPool(7,7)       │
+│   → (128, 7, 7)                                                      │
+│                                                                       │
+│ Output: F_ms (batch, 128, 7, 7)                                      │
+│                                                                       │
+│ Lý do thiết kế:                                                       │
+│  ✓ 3 layers đủ để học spectral patterns từ 5 bands                  │
+│  ✓ Gradual channel increase (5→32→64→128) tránh bottleneck          │
+│  ✓ MaxPool giảm spatial size, giữ lại features quan trọng           │
+│  ✓ AdaptiveAvgPool(7,7) để match spatial size với RGB               │
+│  ✓ BatchNorm giúp ổn định training với data nhỏ                     │
+│  ✓ 128 channels đủ để represent MS features mà không quá phức tạp   │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ C. HS ENCODER (TRAINABLE)                                            │
+├──────────────────────────────────────────────────────────────────────┤
+│ Input:  HS (batch, 125, 224, 224)                                    │
+│                                                                       │
+│ Architecture:                                                         │
+│   Conv2d(125→64, k=3, p=1) → BN → ReLU → MaxPool(2)                 │
+│   → (64, 112, 112)                                                   │
+│                                                                       │
+│   Conv2d(64→128, k=3, p=1) → BN → ReLU → AdaptiveAvgPool(7,7)       │
+│   → (128, 7, 7)                                                      │
+│                                                                       │
+│ Output: F_hs (batch, 128, 7, 7)                                      │
+│                                                                       │
+│ Lý do thiết kế:                                                       │
+│  ✓ HS có 125 bands → cần reduce dimension mạnh (125→64 ngay layer 1)│
+│  ✓ Chỉ 2 layers (thay vì 3 như MS) vì HS đã rất high-dim            │
+│  ✓ Output 128 channels GIỐNG MS để dễ fusion                        │
+│  ✓ Shallow network tránh overfit với 125-dim input và data nhỏ      │
+│  ✓ AdaptiveAvgPool(7,7) để match spatial size                       │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ D. SPECTRAL ATTENTION FUSION (TRAINABLE)                             │
+├──────────────────────────────────────────────────────────────────────┤
+│ Input:  F_ms (batch, 128, 7, 7) + F_hs (batch, 128, 7, 7)           │
+│ Module: MultiHeadSpectralAttention                                   │
+│   - num_heads: 4                                                     │
+│   - dropout: 0.4                                                     │
+│ Output: F_spec (batch, 256, 7, 7)                                    │
+│                                                                       │
+│ Cơ chế hoạt động:                                                     │
+│  1. Multi-head self-attention giữa MS và HS                          │
+│  2. Mỗi head học một aspect của correlation                          │
+│  3. Concatenate outputs từ 4 heads                                   │
+│  4. Linear projection to 256 channels                                │
+│                                                                       │
+│ Lý do dùng Attention:                                                 │
+│  ✓ MS và HS cùng capture spectral info nhưng ở different ranges     │
+│  ✓ Attention học được "MS band X tương quan với HS band Y thế nào"  │
+│  ✓ Adaptive fusion (không phải simple concatenation)                │
+│  ✓ Multi-head cho phép học nhiều relationships khác nhau            │
+│  ✓ Dropout 0.4 tránh overfit (data nhỏ)                             │
+│                                                                       │
+│ Sau đó Project 256→512:                                              │
+│  Conv2d(256→512, k=1) → BN → ReLU → Dropout2d(0.4)                  │
+│                                                                       │
+│  Lý do: Match channels với F_rgb (512) để fusion tiếp               │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ E. CONTEXT GATED FUSION (TRAINABLE)                                  │
+├──────────────────────────────────────────────────────────────────────┤
+│ Input:  F_rgb (batch, 512, 7, 7) + F_spec (batch, 512, 7, 7)        │
+│ Module: ContextGatedFusion                                           │
+│ Output: F_fused (batch, 512, 7, 7)                                   │
+│                                                                       │
+│ Cơ chế hoạt động (gated mechanism):                                  │
+│  1. Concat F_rgb và F_spec → (batch, 1024, 7, 7)                    │
+│  2. Conv → Sigmoid → Gate G (batch, 512, 7, 7)                      │
+│  3. F_fused = G * F_rgb + (1-G) * F_spec                            │
+│                                                                       │
+│  → Gate tự học "khi nào tin RGB, khi nào tin Spectral"              │
+│                                                                       │
+│ Lý do dùng Context Gated Fusion:                                     │
+│  ✓ RGB tốt cho texture, spatial patterns                            │
+│  ✓ Spectral tốt cho chemical composition, disease signatures        │
+│  ✓ Gate học adaptive weighting theo context                         │
+│  ✓ Ví dụ: Nếu leaf có texture rõ → gate ưu tiên RGB                │
+│           Nếu cần detect subtle disease → gate ưu tiên Spectral     │
+│  ✓ Learnable, flexible hơn simple concatenation hoặc average        │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ F. CLASSIFICATION HEAD (TRAINABLE)                                   │
+├──────────────────────────────────────────────────────────────────────┤
+│ Input:  F_fused (batch, 512, 7, 7)                                   │
+│ Module: RobustWheatHead                                              │
+│   - dropout: 0.5 (cao hơn 0.4 của encoders)                         │
+│                                                                       │
+│ Architecture (internal):                                             │
+│   GlobalAvgPool(7,7 → 1,1) → (batch, 512)                           │
+│   Dropout(0.5)                                                       │
+│   Linear(512 → 256) → ReLU → Dropout(0.5)                           │
+│   Linear(256 → 3)                                                    │
+│                                                                       │
+│ Output: Logits (batch, 3)                                            │
+│                                                                       │
+│ Lý do thiết kế:                                                       │
+│  ✓ GlobalAvgPool: Robust hơn flatten, giảm overfitting              │
+│  ✓ Dropout 0.5: Cao nhất trong model vì head dễ overfit nhất        │
+│  ✓ 512→256→3: Gradual reduction tránh information bottleneck        │
+│  ✓ ReLU giữa các layers để non-linearity                            │
+└──────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+3. LÝ DO THIẾT KẾ TỔNG THỂ
+================================================================================
+
+❓ TẠI SAO KHÔNG DÙNG SOFT COMPETITION Ở STAGE 1?
+
+Soft Competition là module học "relative importance" giữa các modalities.
+Cơ chế: Học gates để điều chỉnh contribution của RGB, MS, HS động.
+
+🚫 Lý do BỎ ở Stage 1:
+   1. CẦN NHIỀU DATA: Soft Competition cần data đủ lớn để học được
+      "khi nào modality X quan trọng hơn Y"
+      
+   2. RISK OVERFITTING: Với 600 samples, model có thể học "noise patterns"
+      thay vì "true importance patterns"
+      
+   3. NHIỀU PARAMETERS: Thêm parameters → tăng risk overfit
+   
+   4. CHƯA CẦN THIẾT: Stage 1 focus vào "model có chạy được không"
+      Stage 2 mới optimize performance với full data
+   
+   ✅ Thay thế: Dùng Attention + Context Gate (đơn giản hơn, ít params hơn)
+
+
+❓ TẠI SAO FREEZE RESNET18?
+
+🔒 Lý do FREEZE:
+   1. PRETRAINED KNOWLEDGE: ResNet18 đã học 1000 classes từ ImageNet
+      → Biết detect edges, textures, shapes, objects
+      
+   2. TRANSFER LEARNING: Wheat leaf features (edges, veins, spots) 
+      tương tự ImageNet objects → transfer tốt
+      
+   3. DATA QUÁ NHỎ: 600 samples KHÔNG ĐỦ để retrain 11M parameters của ResNet18
+      → Nếu train sẽ overfit nặng
+      
+   4. ỔN ĐỊNH GRADIENT: ResNet18 có 18 layers, rất deep
+      → Nếu train có thể gặp vanishing/exploding gradients
+      
+   5. GIẢM MEMORY: Frozen layers không lưu gradients
+      → Giảm GPU memory, train được batch size lớn hơn
+   
+   ✅ Kết quả: Chỉ train 30-40% parameters → giảm mạnh overfitting
+
+
+❓ TẠI SAO DÙNG MULTI-HEAD ATTENTION?
+
+🎯 Lý do:
+   1. MULTIPLE RELATIONSHIPS: MS-HS correlation phức tạp
+      - Head 1: Học "Red Edge trong MS ↔ NIR trong HS"
+      - Head 2: Học "Green trong MS ↔ Visible range trong HS"
+      - Head 3: Học spatial patterns
+      - Head 4: Học spectral patterns
+      
+   2. FLEXIBLE FUSION: Không cố định weights, học adaptive
+   
+   3. PROVEN ARCHITECTURE: Multi-head attention là SOTA trong vision
+      (ViT, DETR, etc.)
+   
+   4. 4 HEADS: Balance giữa capacity và overfitting
+      - 2 heads: Quá ít, không đủ represent relationships
+      - 8 heads: Quá nhiều, dễ overfit với data nhỏ
+      - 4 heads: Vừa đủ
+
+
+❓ TẠI SAO OUTPUT 128 CHANNELS CHO MS VÀ HS?
+
+📊 Lý do:
+   1. BALANCE: RGB = 512, Spectral = 256 (128 MS + 128 HS)
+      → Tỉ lệ 2:1 phù hợp (RGB quan trọng hơn một chút)
+      
+   2. KHÔNG QUÁ LỚN: 
+      - 256 channels/branch → quá nhiều params với data nhỏ
+      - 64 channels/branch → quá ít, mất information
+      - 128 channels → sweet spot
+      
+   3. SYMMETRY: MS và HS cùng 128 → dễ fusion bằng attention
+      (Attention works best khi input dims tương đương)
+
+================================================================================
+4. CHIẾN LƯỢC TRAINING
+================================================================================
+
+🎓 TRAINING STRATEGY:
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ TRAINABLE vs FROZEN                                                   │
+├──────────────────────────────────────────────────────────────────────┤
+│ FROZEN (60-70% parameters):                                           │
+│   ❄️ ResNet18 backbone (11M params)                                  │
+│                                                                       │
+│ TRAINABLE (30-40% parameters):                                        │
+│   ✅ MS Encoder (~50K params)                                        │
+│   ✅ HS Encoder (~100K params)                                       │
+│   ✅ Spectral Attention (~200K params)                               │
+│   ✅ Spectral Projection (~130K params)                              │
+│   ✅ Context Gated Fusion (~500K params)                             │
+│   ✅ Classification Head (~130K params)                              │
+│                                                                       │
+│ Total trainable: ~1.1M params (vs 11M nếu train toàn bộ)            │
+│                                                                       │
+│ Lợi ích:                                                              │
+│  ✓ Giảm 10x số parameters cần học → giảm mạnh overfitting           │
+│  ✓ Train nhanh hơn (ít gradients cần compute)                       │
+│  ✓ Cần ít GPU memory hơn                                             │
+│  ✓ Ổn định hơn (không có deep network gradients)                    │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ OPTIMIZER: AdamW                                                      │
+├──────────────────────────────────────────────────────────────────────┤
+│ Learning rate: 1e-4                                                   │
+│ Weight decay: 1e-3                                                    │
+│                                                                       │
+│ Lý do chọn AdamW:                                                     │
+│  ✓ Adaptive learning rate per parameter                             │
+│  ✓ Works tốt với small datasets                                     │
+│  ✓ Weight decay giúp regularization                                 │
+│  ✓ Ít sensitive với hyperparams hơn SGD                             │
+│                                                                       │
+│ Lý do lr=1e-4:                                                        │
+│  ✓ Không quá lớn → không overshoot minima                           │
+│  ✓ Không quá nhỏ → train không quá chậm                             │
+│  ✓ Safe default cho transfer learning                               │
+│                                                                       │
+│ Lý do weight_decay=1e-3:                                              │
+│  ✓ L2 regularization ngầm                                            │
+│  ✓ Prevent large weights → giảm overfitting                         │
+│  ✓ 1e-3 là moderate strength phù hợp small data                     │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ SCHEDULER: ReduceLROnPlateau                                         │
+├──────────────────────────────────────────────────────────────────────┤
+│ Mode: max (monitor validation accuracy)                              │
+│ Factor: 0.5 (giảm LR xuống 1/2)                                      │
+│ Patience: 5 epochs                                                    │
+│                                                                       │
+│ Hoạt động:                                                            │
+│  - Nếu val_acc không tăng trong 5 epochs                            │
+│  - → Giảm LR: 1e-4 → 5e-5 → 2.5e-5 → ...                           │
+│                                                                       │
+│ Lý do:                                                                │
+│  ✓ Tự động điều chỉnh LR khi plateau                                │
+│  ✓ Giúp escape local minima                                         │
+│  ✓ Fine-tuning ở cuối training (LR nhỏ → cẩn thận hơn)              │
+│  ✓ Không cần manual tuning schedule                                 │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ EARLY STOPPING                                                        │
+├──────────────────────────────────────────────────────────────────────┤
+│ Patience: 15 epochs                                                   │
+│ Metric: Validation accuracy                                          │
+│                                                                       │
+│ Logic:                                                                │
+│  - Save model khi val_acc tăng                                       │
+│  - Nếu val_acc không tăng trong 15 epochs → STOP                    │
+│                                                                       │
+│ Lý do patience=15:                                                    │
+│  ✓ Dataset nhỏ → convergence có thể chậm                            │
+│  ✓ Cần time để scheduler giảm LR và explore                         │
+│  ✓ Không quá dài (tránh waste time khi model đã converge)           │
+│                                                                       │
+│ Tại sao early stopping quan trọng:                                   │
+│  ✓ Tránh overfit: Val acc giảm nhưng train acc tăng = overfitting   │
+│  ✓ Save time: Không train 100 epochs nếu converge ở epoch 40        │
+│  ✓ Best model: Restore weights tại peak val acc                     │
+└──────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+5. HYPERPARAMETERS VÀ LÝ DO CHỌN
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ BATCH SIZE: 16                                                        │
+├──────────────────────────────────────────────────────────────────────┤
+│ Lý do:                                                                │
+│  ✓ Dataset nhỏ (600 samples) → batch size nhỏ                       │
+│  ✓ 16 là compromise giữa:                                            │
+│    - Stability (batch lớn hơn → gradient ổn định hơn)               │
+│    - Generalization (batch nhỏ hơn → generalize tốt hơn)            │
+│  ✓ Memory: 16 * (RGB + MS + HS) vừa đủ cho GPU 8GB                  │
+│  ✓ Nếu batch=32: Quá lớn so với dataset, ít updates/epoch           │
+│  ✓ Nếu batch=8: Quá nhỏ, gradient noise, unstable training          │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ DROPOUT RATES                                                         │
+├──────────────────────────────────────────────────────────────────────┤
+│ Encoders (MS/HS): dropout=0.4                                        │
+│ Head: dropout=0.5                                                     │
+│                                                                       │
+│ Lý do phân tầng:                                                      │
+│  ✓ Encoders: 0.4 (moderate) - vừa regularize vừa giữ info          │
+│  ✓ Head: 0.5 (aggressive) - head dễ overfit nhất (fully connected) │
+│                                                                       │
+│ Tại sao không dùng dropout cao hơn:                                  │
+│  ✓ 0.6-0.7: Quá mạnh, mất quá nhiều information                     │
+│  ✓ Model sẽ underfit (không đủ capacity học patterns)               │
+│                                                                       │
+│ Tại sao không dùng dropout thấp hơn:                                 │
+│  ✓ 0.2-0.3: Quá yếu, không đủ regularization                        │
+│  ✓ Model sẽ overfit với dataset nhỏ                                 │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ MAX EPOCHS: 100                                                       │
+├──────────────────────────────────────────────────────────────────────┤
+│ Lý do:                                                                │
+│  ✓ Upper bound, thường stop sớm hơn do early stopping               │
+│  ✓ 100 đủ để model converge ngay cả khi learn chậm                  │
+│  ✓ Với LR scheduler, epochs sau sẽ có LR nhỏ để fine-tune          │
+│                                                                       │
+│ Thực tế:                                                              │
+│  - Thường stop ở epoch 40-60 do early stopping                      │
+│  - Chỉ chạy full 100 nếu model vẫn improve (hiếm)                   │
+└──────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+6. AUGMENTATION STRATEGY
+================================================================================
+
+🎨 LIGHT AUGMENTATION CHO STAGE 1:
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ RGB AUGMENTATION                                                      │
+├──────────────────────────────────────────────────────────────────────┤
+│ Training:                                                             │
+│   1. Resize(256, 256)                                                │
+│   2. HorizontalFlip(p=0.5)                                           │
+│   3. VerticalFlip(p=0.5)                                             │
+│   4. Rotate(limit=±15°, p=0.5)                                       │
+│   5. RandomBrightnessContrast(limit=0.15, p=0.3)                    │
+│   6. CenterCrop(224, 224)                                            │
+│   7. Normalize(ImageNet mean/std)                                    │
+│   8. ToTensor                                                         │
+│                                                                       │
+│ Validation:                                                           │
+│   1. Resize(256, 256)                                                │
+│   2. CenterCrop(224, 224)                                            │
+│   3. Normalize(ImageNet mean/std)                                    │
+│   4. ToTensor                                                         │
+│   (NO augmentation - evaluate model as-is)                           │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ MS/HS AUGMENTATION                                                    │
+├──────────────────────────────────────────────────────────────────────┤
+│ Training:                                                             │
+│   1. Resize(256, 256)                                                │
+│   2. HorizontalFlip(p=0.5)                                           │
+│   3. VerticalFlip(p=0.5)                                             │
+│   4. Rotate(limit=±15°, p=0.5)                                       │
+│   5. CenterCrop(224, 224)                                            │
+│   6. Gaussian Noise (σ=0.01, p=0.3)                                 │
+│   7. Band Dropout (1-2 bands, p=0.2)                                │
+│                                                                       │
+│ Validation:                                                           │
+│   1. Resize(256, 256)                                                │
+│   2. CenterCrop(224, 224)                                            │
+│   (NO augmentation)                                                   │
+└──────────────────────────────────────────────────────────────────────┘
+
+📋 LÝ DO TỪNG AUGMENTATION:
+
+✅ HorizontalFlip + VerticalFlip (p=0.5):
+   - Leaf có thể ở mọi hướng trong thực tế
+   - Flip tạo thêm 4x data (original, H, V, HV)
+   - Safe: Không làm thay đổi semantic (vẫn là Health/Rust/Other)
+
+✅ Rotate(±15°, p=0.5):
+   - Leaf có thể nghiêng nhẹ
+   - ±15° vừa đủ: Không quá extreme (tránh unrealistic angles)
+   - Giúp model robust với orientation
+
+✅ RandomBrightnessContrast (limit=0.15, p=0.3):
+   - Lighting conditions khác nhau (shadow, bright sun)
+   - 0.15 là nhẹ nhàng (không làm biến dạng màu quá mức)
+   - p=0.3 (không phải mọi ảnh) tránh quá nhiều noise
+
+✅ Gaussian Noise (σ=0.01):
+   - Spectral data có sensor noise
+   - σ=0.01 rất nhỏ (1% of max value) → realistic
+   - Giúp model robust với noisy sensors
+
+✅ Band Dropout:
+   - Simulate missing/corrupted spectral bands
+   - 1-2 bands out of 5 (MS) hoặc 125 (HS) → small impact
+   - Force model học từ subset of bands → better generalization
+
+🚫 KHÔNG DÙNG HEAVY AUGMENTATION:
+
+❌ Rotate(±90°): Unrealistic, leaf không bao giờ thẳng đứng
+❌ CutOut/MixUp: Dataset quá nhỏ, có thể tạo meaningless samples
+❌ Heavy color jitter: Làm mất spectral signatures (critical for disease)
+❌ Elastic transform: Không phù hợp với wheat leaf structure
+
+================================================================================
+7. LOSS FUNCTION VÀ CLASS BALANCING
+================================================================================
+
+📊 WEIGHTED CROSS-ENTROPY LOSS:
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ LOSS FUNCTION                                                         │
+├──────────────────────────────────────────────────────────────────────┤
+│ Formula: L = - Σ w_i * y_i * log(p_i)                               │
+│                                                                       │
+│ Trong đó:                                                             │
+│   - w_i: Class weight (computed từ class distribution)              │
+│   - y_i: Ground truth (one-hot)                                     │
+│   - p_i: Predicted probability (sau softmax)                        │
+│                                                                       │
+│ Class weights computation:                                            │
+│   w_i = n_samples / (n_classes * n_samples_class_i)                 │
+│                                                                       │
+│ Ví dụ với dataset:                                                    │
+│   - Total: 600 samples                                               │
+│   - Health: 250 samples → w_0 = 600/(3*250) = 0.8                   │
+│   - Rust: 200 samples → w_1 = 600/(3*200) = 1.0                     │
+│   - Other: 150 samples → w_2 = 600/(3*150) = 1.33                   │
+│                                                                       │
+│   → Class ít sample hơn có weight cao hơn                           │
+│   → Model penalty nặng hơn khi misclassify rare class               │
+└──────────────────────────────────────────────────────────────────────┘
+
+❓ TẠI SAO DÙNG WEIGHTED LOSS?
+
+🎯 Problem: Class Imbalance
+   - Nếu Health=250, Rust=200, Other=150
+   - Model có thể bias về Health (vì nhiều sample nhất)
+   - Predict "tất cả là Health" → 250/600 = 41.7% accuracy (mà không học gì!)
+
+✅ Solution: Weighted Loss
+   - Tăng penalty cho misclassification của rare class (Other)
+   - Giảm penalty cho common class (Health)
+   - Force model học tất cả các classes EQUALLY
+
+📈 Impact:
+   - Balanced accuracy across classes
+   - Không bị dominated bởi majority class
+   - Critical cho applications: Cần detect RUST (rare) không kém HEALTH
+
+❓ TẠI SAO KHÔNG DÙNG FOCAL LOSS?
+
+🔍 Focal Loss:
+   FL = - α * (1-p)^γ * log(p)
+   
+   - α: Class weight (giống weighted CE)
+   - γ: Focusing parameter (typically 2)
+   - (1-p)^γ: Down-weight easy examples
+
+🚫 Lý do KHÔNG dùng ở Stage 1:
+   1. OVERKILL: Dataset nhỏ, không có quá nhiều easy examples
+   2. UNSTABLE: Focal loss khó tune (γ hyperparameter thêm)
+   3. DESIGNED FOR: Extreme imbalance (1:100, 1:1000)
+      → Wheat dataset imbalance vừa phải (1:1.5:1.7)
+   4. SIMPLE IS BETTER: Với data nhỏ, weighted CE đủ và stable hơn
+
+✅ Kết luận: Weighted CE là best choice cho Stage 1
+
+================================================================================
+8. DATA SPLIT STRATEGY
+================================================================================
+
+📂 DATA ORGANIZATION:
+
+Original:
+   Data/
+      train/  (~600 samples)
+         RGB/, MS/, HS/
+      val/    (có thể rỗng hoặc quá ít)
+         RGB/, MS/, HS/
+
+Strategy:
+   - Nếu val/ rỗng hoặc < 50 samples:
+     → Split from train: 80% train, 20% val
+     → Stratified split (giữ tỉ lệ classes)
+   
+   - Nếu val/ đủ lớn (≥50 samples):
+     → Dùng luôn val/ có sẵn
+
+Lý do stratified split:
+   ✓ Giữ class distribution giống nhau ở train và val
+   ✓ Train: Health 40%, Rust 35%, Other 25%
+     Val:   Health 40%, Rust 35%, Other 25% (SAME)
+   ✓ Evaluation công bằng, không bias
+
+================================================================================
+9. TẠI SAO CẦN FILE GIẢI THÍCH NÀY?
+================================================================================
+
+📝 MỤC ĐÍCH:
+
+1. DOCUMENTATION:
+   ✓ Ghi lại decision-making process
+   ✓ Ai đọc code cũng hiểu "tại sao làm vậy"
+   ✓ Dễ maintain và extend sau này
+
+2. LEARNING:
+   ✓ Học được rationale đằng sau mỗi design choice
+   ✓ Hiểu trade-offs (tại sao chọn X không chọn Y)
+   ✓ Apply principles cho projects khác
+
+3. DEBUGGING:
+   ✓ Khi model fail, biết nơi nào cần check
+   ✓ Hiểu assumptions → validate assumptions
+   ✓ Modify systematically, không random tuning
+
+4. COMMUNICATION:
+   ✓ Explain cho teammates/managers
+   ✓ Write technical reports
+   ✓ Justify design trong interviews/presentations
+
+5. REPRODUCIBILITY:
+   ✓ Ai cũng có thể recreate model với same rationale
+   ✓ Không phụ thuộc vào tribal knowledge
+   ✓ Science-based ML, không phải magic/luck
+
+================================================================================
+10. ROADMAP: STAGE 1 → STAGE 2 → PRODUCTION
+================================================================================
+
+📍 CURRENT: STAGE 1 (Limited Data)
+   ✅ Simple architecture
+   ✅ Frozen backbone
+   ✅ Light augmentation
+   ✅ Proof of concept
+
+➡️ NEXT: STAGE 2 (Full Data - ~2000+ samples/class)
+   🎯 Unfreeze ResNet18 (fine-tune backbone)
+   🎯 Add Soft Competition module
+   🎯 Heavier augmentation (CutOut, MixUp)
+   🎯 Focal Loss (nếu imbalance severe)
+   🎯 Ensemble multiple models
+   🎯 Test Time Augmentation (TTA)
+
+➡️ FUTURE: PRODUCTION
+   🚀 Model compression (pruning, quantization)
+   🚀 ONNX/TensorRT deployment
+   🚀 Real-time inference (<100ms)
+   🚀 Edge deployment (Jetson Nano)
+   🚀 A/B testing với old model
+   🚀 Monitoring và retraining pipeline
+
+================================================================================
+11. KEY TAKEAWAYS
+================================================================================
+
+🎓 NHỮNG BÀI HỌC QUAN TRỌNG:
+
+1. START SIMPLE:
+   - Stage 1 không cần fancy techniques
+   - Simple + well-executed > Complex + buggy
+   - Validate pipeline trước, optimize sau
+
+2. TRANSFER LEARNING:
+   - Pretrained model = goldmine với small data
+   - Freeze khi data < 1000 samples
+   - Fine-tune khi data > 5000 samples
+
+3. REGULARIZATION IS KEY:
+   - Dropout, weight decay, early stopping
+   - Augmentation nhẹ nhàng và realistic
+   - Class balancing tránh bias
+
+4. UNDERSTAND TRADE-OFFS:
+   - Capacity vs Overfitting
+   - Accuracy vs Inference speed
+   - Complexity vs Maintainability
+
+5. DOCUMENT EVERYTHING:
+   - Why not just what
+   - Future you will thank you
+   - Make ML reproducible
+
+================================================================================
+KẾT LUẬN
+================================================================================
+
+Model Stage 1 được thiết kế với triết lý:
+   "SIMPLE, STABLE, SCALABLE"
+
+✅ SIMPLE:
+   - Bỏ Soft Competition
+   - Freeze backbone
+   - Standard losses và optimizers
+
+✅ STABLE:
+   - Light augmentation
+   - Class balancing
+   - Early stopping
+   - Dropout regularization
+
+✅ SCALABLE:
+   - Modular architecture
+   - Easy to add components (Stage 2)
+   - Clear upgrade path
+
+Mục tiêu KHÔNG PHẢI maximize accuracy ở Stage 1.
+Mục tiêu LÀ: VALIDATE pipeline, PREVENT overfitting, BUILD foundation.
+
+Stage 2 với full data sẽ push performance cao hơn.
+
+================================================================================
+END OF DOCUMENT
+================================================================================
+Tác giả: AI Assistant
+Ngày tạo: 2026-02-05
+Mục đích: Giải thích chi tiết kiến trúc và lý do thiết kế PipelineV1_Stage1

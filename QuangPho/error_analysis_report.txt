@@ -1,0 +1,48 @@
+======================================================================
+ERROR ANALYSIS REPORT
+======================================================================
+
+Total samples: 120
+Accuracy: 0.675
+
+Files with errors:
+----------------------------------------------------------------------
+Health_hyper_80.png: True=Health, Pred=Rust
+Other_hyper_119.png: True=Other, Pred=Rust
+Rust_hyper_172.png: True=Rust, Pred=Health
+Health_hyper_92.png: True=Health, Pred=Rust
+Health_hyper_60.png: True=Health, Pred=Rust
+Other_hyper_24.png: True=Other, Pred=Health
+Rust_hyper_62.png: True=Rust, Pred=Health
+Rust_hyper_51.png: True=Rust, Pred=Health
+Rust_hyper_192.png: True=Rust, Pred=Health
+Other_hyper_188.png: True=Other, Pred=Health
+Other_hyper_41.png: True=Other, Pred=Rust
+Health_hyper_23.png: True=Health, Pred=Other
+Rust_hyper_29.png: True=Rust, Pred=Health
+Rust_hyper_63.png: True=Rust, Pred=Health
+Health_hyper_36.png: True=Health, Pred=Rust
+Health_hyper_89.png: True=Health, Pred=Rust
+Health_hyper_196.png: True=Health, Pred=Rust
+Health_hyper_4.png: True=Health, Pred=Rust
+Health_hyper_55.png: True=Health, Pred=Rust
+Health_hyper_163.png: True=Health, Pred=Other
+Other_hyper_118.png: True=Other, Pred=Health
+Health_hyper_151.png: True=Health, Pred=Rust
+Rust_hyper_18.png: True=Rust, Pred=Health
+Other_hyper_83.png: True=Other, Pred=Health
+Rust_hyper_43.png: True=Rust, Pred=Health
+Other_hyper_48.png: True=Other, Pred=Rust
+Health_hyper_10.png: True=Health, Pred=Rust
+Other_hyper_23.png: True=Other, Pred=Health
+Health_hyper_191.png: True=Health, Pred=Rust
+Health_hyper_178.png: True=Health, Pred=Rust
+Health_hyper_111.png: True=Health, Pred=Rust
+Rust_hyper_3.png: True=Rust, Pred=Health
+Rust_hyper_33.png: True=Rust, Pred=Health
+Health_hyper_182.png: True=Health, Pred=Rust
+Health_hyper_142.png: True=Health, Pred=Rust
+Health_hyper_93.png: True=Health, Pred=Rust
+Rust_hyper_49.png: True=Rust, Pred=Health
+Rust_hyper_34.png: True=Rust, Pred=Health
+Health_hyper_195.png: True=Health, Pred=Rust

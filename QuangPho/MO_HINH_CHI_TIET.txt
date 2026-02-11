@@ -1,0 +1,932 @@
+================================================================================
+    MÔ HÌNH PHÂN LOẠI BỆNH LÚA MÌ - TWO-STEP WHEAT NET
+    Chi tiết Kiến trúc & Quy trình Huấn luyện
+================================================================================
+
+📅 Ngày tạo: 04/02/2026
+📂 File gốc: PipelineV1_Stage1_TwoStep.py
+🎯 Mục tiêu: Phân loại 3 lớp bệnh lúa mì (Healthy, Rust, Other)
+
+
+================================================================================
+I. TỔNG QUAN MÔ HÌNH
+================================================================================
+
+1. CHIẾN LƯỢC PHÂN LOẠI: TWO-STEP BINARY CLASSIFICATION
+   ┌─────────────────────────────────────────────────────────────┐
+   │ Quy trình 2 bước:                                           │
+   │                                                             │
+   │ STEP 1: Healthy vs Diseased (RGB-dominant)                 │
+   │    ├─ Tỷ trọng: 85% RGB + 15% Spectral                    │
+   │    ├─ Focus: Phân biệt màu sắc (xanh vs không xanh)       │
+   │    └─ Output: Binary (0=Healthy, 1=Diseased)              │
+   │                                                             │
+   │ STEP 2: Rust vs Other (Spectral-dominant)                  │
+   │    ├─ Tỷ trọng: 30% RGB + 70% Spectral                    │
+   │    ├─ Focus: Chữ ký phổ đặc trưng cho bệnh gỉ            │
+   │    ├─ Chỉ áp dụng cho mẫu Diseased từ Step 1              │
+   │    └─ Output: Binary (0=Rust, 1=Other)                     │
+   │                                                             │
+   │ FINAL OUTPUT: Kết hợp xác suất 2 bước → 3 classes         │
+   │    ├─ P(Healthy) = P(Healthy | Step1)                     │
+   │    ├─ P(Rust) = P(Diseased | Step1) × P(Rust | Step2)    │
+   │    └─ P(Other) = P(Diseased | Step1) × P(Other | Step2)  │
+   └─────────────────────────────────────────────────────────────┘
+
+2. ƯU ĐIỂM CỦA PHƯƠNG PHÁP
+   ✓ Giải quyết vấn đề Healthy bị nhầm với Rust
+   ✓ Phù hợp với quy trình chẩn đoán thực tế (tầm soát → chẩn đoán)
+   ✓ Tận dụng điểm mạnh của từng modality (RGB cho màu, Spectral cho bệnh)
+   ✓ Giảm confusion giữa các class khó phân biệt
+
+
+================================================================================
+II. KIẾN TRÚC MÔ HÌNH CHI TIẾT
+================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│                          INPUT LAYER (3 Modalities)                        │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  1. RGB Image (224×224×3)                                                 │
+│     ├─ Normalize: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225] │
+│     └─ Augmentation: Flip, Rotate(±15°), Brightness/Contrast            │
+│                                                                            │
+│  2. Multispectral (MS) Image (224×224×5)                                  │
+│     ├─ 5 bands: Blue, Green, Red, Red-Edge, NIR                         │
+│     └─ Normalize: [0, 1]                                                  │
+│                                                                            │
+│  3. Hyperspectral (HS) Image (224×224×125)                                │
+│     ├─ 125 bands: 400-1000nm                                             │
+│     └─ Normalize: [0, 1]                                                  │
+│                                                                            │
+│  4. RGB Handcrafted Features (84 dims)                                    │
+│     ├─ GLCM Texture: 36 dims (Contrast, Homogeneity, Correlation × 3 ch)│
+│     ├─ LBP Multiscale: 30 dims (R=1,2,3 on Green channel)               │
+│     └─ Color Features: 18 dims (HSV stats + ExG + VARI)                 │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│                      FEATURE EXTRACTION LAYER                              │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  BRANCH 1: RGB FEATURE EXTRACTOR (FROZEN)                                 │
+│  ─────────────────────────────────────────                                │
+│   └─ RGBCNNFeature (ResNet18 Pretrained)                                 │
+│      ├─ Input: (B, 3, 224, 224)                                          │
+│      ├─ Backbone: ResNet18 (ImageNet weights)                            │
+│      ├─ Output: (B, 512, 7, 7)                                           │
+│      └─ Status: FROZEN (requires_grad=False)                             │
+│                                                                            │
+│   └─ RGB Handcrafted Projection (TRAINABLE)                              │
+│      ├─ Input: (B, 84)                                                    │
+│      ├─ Layer 1: Linear(84 → 128) + BatchNorm + ReLU + Dropout(0.3)    │
+│      ├─ Layer 2: Linear(128 → 128)                                       │
+│      └─ Output: (B, 128)                                                  │
+│                                                                            │
+│   └─ RGB Fusion Layer                                                     │
+│      ├─ Concat: CNN features (512) + Handcrafted (128) = 640            │
+│      ├─ Linear(640 → 512)                                                 │
+│      └─ Output: (B, 512, 7, 7) [reshaped]                                │
+│                                                                            │
+│  BRANCH 2: MULTISPECTRAL ENCODER (TRAINABLE)                              │
+│  ─────────────────────────────────────────                                │
+│   └─ MS Encoder (5 → 128 channels)                                       │
+│      ├─ Conv2d(5→32, k=3, p=1) + BN + ReLU + MaxPool(2)                 │
+│      ├─ Conv2d(32→64, k=3, p=1) + BN + ReLU + MaxPool(2)                │
+│      ├─ Conv2d(64→128, k=3, p=1) + BN + ReLU + AdaptiveAvgPool(7×7)    │
+│      └─ Output: (B, 128, 7, 7)                                           │
+│                                                                            │
+│  BRANCH 3: HYPERSPECTRAL ENCODER (TRAINABLE)                              │
+│  ─────────────────────────────────────────                                │
+│   └─ HS Encoder (125 → 128 channels)                                     │
+│      ├─ Conv2d(125→64, k=3, p=1) + BN + ReLU + MaxPool(2)               │
+│      ├─ Conv2d(64→128, k=3, p=1) + BN + ReLU + AdaptiveAvgPool(7×7)    │
+│      └─ Output: (B, 128, 7, 7)                                           │
+│                                                                            │
+│  SPECTRAL FUSION (MS + HS)                                                 │
+│  ─────────────────────────                                                │
+│   └─ MultiHeadSpectralAttention (TRAINABLE)                              │
+│      ├─ Input: MS (B,128,7,7) + HS (B,128,7,7)                          │
+│      ├─ Mechanism: Multi-head Attention (4 heads)                        │
+│      ├─ Dropout: 0.4                                                      │
+│      └─ Output: (B, 256, 7, 7)                                           │
+│                                                                            │
+│   └─ Spectral Projection                                                  │
+│      ├─ Conv2d(256→512, k=1) + BN + ReLU + Dropout2d(0.4)               │
+│      └─ Output: (B, 512, 7, 7)                                           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│                         DECISION LAYERS (TWO-STEP)                         │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  STEP 1 DECISION PATH: Healthy vs Diseased                                │
+│  ─────────────────────────────────────────────────                        │
+│   ├─ BiasedContextGate (RGB Weight: 85%)                                 │
+│   │  ├─ Input: F_RGB (B,512,7,7) + F_Spectral (B,512,7,7)               │
+│   │  ├─ Gate Network:                                                     │
+│   │  │  └─ Conv2d(1024→512, k=1) + BN + ReLU                            │
+│   │  │  └─ Conv2d(512→1, k=1) + Sigmoid                                  │
+│   │  ├─ Fusion: 0.85×F_RGB + 0.15×Gate×F_Spectral                       │
+│   │  └─ Output: (B, 512, 7, 7)                                           │
+│   │                                                                        │
+│   └─ Classification Head                                                  │
+│      ├─ AdaptiveAvgPool2d(1×1) → Flatten                                 │
+│      ├─ Linear(512→256) + BN + ReLU + Dropout(0.5)                       │
+│      ├─ Linear(256→128) + BN + ReLU + Dropout(0.5)                       │
+│      ├─ Linear(128→2)                                                     │
+│      └─ Output: (B, 2) [Healthy=0, Diseased=1]                           │
+│                                                                            │
+│  STEP 2 DECISION PATH: Rust vs Other                                      │
+│  ─────────────────────────────────────────────────                        │
+│   ├─ BiasedContextGate (RGB Weight: 30%)                                 │
+│   │  ├─ Input: F_RGB (B,512,7,7) + F_Spectral (B,512,7,7)               │
+│   │  ├─ Gate Network: [Same structure as Step 1]                         │
+│   │  ├─ Fusion: 0.30×F_RGB + 0.70×Gate×F_Spectral                       │
+│   │  └─ Output: (B, 512, 7, 7)                                           │
+│   │                                                                        │
+│   └─ Classification Head                                                  │
+│      ├─ AdaptiveAvgPool2d(1×1) → Flatten                                 │
+│      ├─ Linear(512→256) + BN + ReLU + Dropout(0.5)                       │
+│      ├─ Linear(256→128) + BN + ReLU + Dropout(0.5)                       │
+│      ├─ Linear(128→2)                                                     │
+│      └─ Output: (B, 2) [Rust=0, Other=1]                                 │
+│                                                                            │
+│  FINAL 3-CLASS OUTPUT (Probabilistic Combination)                         │
+│  ──────────────────────────────────────────────────                       │
+│   Step1_probs = Softmax(Step1_logits)  # [P(H), P(D)]                   │
+│   Step2_probs = Softmax(Step2_logits)  # [P(R|D), P(O|D)]               │
+│                                                                            │
+│   P(Healthy) = Step1_probs[0]                                            │
+│   P(Rust)    = Step1_probs[1] × Step2_probs[0]                          │
+│   P(Other)   = Step1_probs[1] × Step2_probs[1]                          │
+│                                                                            │
+│   Final_logits = log([P(H), P(R), P(O)])                                 │
+└────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+III. QUY TRÌNH HUẤN LUYỆN (3 PHASES)
+================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 1: TRAIN STEP 1 (Healthy vs Diseased)                               │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Mục tiêu: Phân biệt lá khỏe mạnh vs lá bệnh                             │
+│                                                                            │
+│  Cấu hình Training:                                                        │
+│   ├─ Epochs: 20                                                           │
+│   ├─ Optimizer: AdamW(lr=1e-4, weight_decay=1e-3)                        │
+│   ├─ Scheduler: ReduceLROnPlateau(patience=5, factor=0.5)               │
+│   ├─ Loss: CrossEntropyLoss với class weights [1.5, 1.0]                │
+│   │   └─ Boost Healthy class để giảm false negatives                     │
+│   ├─ RGB Weight: 85% (Spectral: 15%)                                     │
+│   └─ RGB Handcrafted Features: ENABLED                                    │
+│                                                                            │
+│  Trainable Components:                                                     │
+│   ✓ MS Encoder (5→128 channels)                                          │
+│   ✓ HS Encoder (125→128 channels)                                        │
+│   ✓ Spectral Attention Fusion                                             │
+│   ✓ Spectral Projection                                                   │
+│   ✓ RGB Handcrafted Projection                                            │
+│   ✓ RGB Fusion Layer                                                      │
+│   ✓ Step 1 BiasedContextGate                                              │
+│   ✓ Step 1 Classification Head                                            │
+│   ✗ RGB Backbone (ResNet18) - FROZEN                                     │
+│                                                                            │
+│  Data Augmentation:                                                        │
+│   RGB:                                                                     │
+│    ├─ Resize(256) → CenterCrop(224)                                      │
+│    ├─ HorizontalFlip(p=0.5)                                              │
+│    ├─ VerticalFlip(p=0.5)                                                │
+│    ├─ Rotate(limit=15°, p=0.5)                                           │
+│    └─ RandomBrightnessContrast(p=0.3)                                    │
+│                                                                            │
+│   MS/HS:                                                                   │
+│    ├─ Resize(256) → CenterCrop(224)                                      │
+│    ├─ HorizontalFlip(p=0.5)                                              │
+│    ├─ VerticalFlip(p=0.5)                                                │
+│    ├─ Rotate(limit=15°, p=0.5)                                           │
+│    ├─ Gaussian Noise (σ=0.01, p=0.3)                                     │
+│    └─ Random Channel Dropout (p=0.2)                                     │
+│                                                                            │
+│  Output:                                                                   │
+│   └─ Checkpoint: checkpoints/best_model_step1.pth                         │
+│   └─ Best Val Accuracy lưu theo Step 1 binary task                       │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 2: TRAIN STEP 2 (Rust vs Other)                                     │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Mục tiêu: Phân biệt bệnh gỉ sắt vs các bệnh khác                        │
+│                                                                            │
+│  Cấu hình Training:                                                        │
+│   ├─ Epochs: 20                                                           │
+│   ├─ Optimizer: AdamW(lr=1e-4, weight_decay=1e-3)                        │
+│   ├─ Scheduler: ReduceLROnPlateau(patience=5, factor=0.5)               │
+│   ├─ Loss: CrossEntropyLoss với class weights [1.0, 1.0]                │
+│   ├─ RGB Weight: 30% (Spectral: 70%)                                     │
+│   ├─ RGB Handcrafted Features: DISABLED                                   │
+│   └─ Training Data: CHỈ mẫu Diseased (label > 0)                         │
+│                                                                            │
+│  Frozen Components (từ Phase 1):                                          │
+│   ✗ Step 1 BiasedContextGate                                              │
+│   ✗ Step 1 Classification Head                                            │
+│                                                                            │
+│  Trainable Components:                                                     │
+│   ✓ MS Encoder (fine-tune)                                               │
+│   ✓ HS Encoder (fine-tune)                                               │
+│   ✓ Spectral Attention Fusion (fine-tune)                                │
+│   ✓ Spectral Projection (fine-tune)                                      │
+│   ✓ Step 2 BiasedContextGate                                              │
+│   ✓ Step 2 Classification Head                                            │
+│                                                                            │
+│  Data Filtering:                                                           │
+│   Chỉ sử dụng samples có label ∈ {1, 2} (Rust, Other)                   │
+│   Chuyển labels: 1→0 (Rust), 2→1 (Other)                                 │
+│                                                                            │
+│  Output:                                                                   │
+│   └─ Checkpoint: checkpoints/best_model_step2.pth                         │
+│   └─ Best Val Accuracy lưu theo Step 2 binary task                       │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 3: FINAL EVALUATION (3-Class)                                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Load Model: checkpoints/best_model_step2.pth                             │
+│                                                                            │
+│  Inference Mode:                                                           │
+│   ├─ Forward pass với step='both'                                        │
+│   ├─ Kết hợp xác suất từ 2 bước                                          │
+│   └─ Đánh giá trên toàn bộ 3 classes                                      │
+│                                                                            │
+│  Evaluation Metrics:                                                       │
+│   ├─ Overall Accuracy                                                     │
+│   ├─ Per-class Precision/Recall/F1-score                                 │
+│   └─ Confusion Matrix (3×3)                                               │
+│                                                                            │
+│  Output:                                                                   │
+│   └─ Checkpoint: checkpoints/best_model_twostep_final.pth                │
+└────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+IV. CHI TIẾT CÁC MODULE CHÍNH
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+1. BiasedContextGate Module
+─────────────────────────────────────────────────────────────────────────────
+
+Mục đích: Điều chỉnh tỷ trọng giữa RGB và Spectral features
+
+Architecture:
+    Input: F_RGB (B,C,H,W), F_Spectral (B,C,H,W)
+    
+    Gate Network:
+        Concat [F_RGB, F_Spectral] → (B, 2C, H, W)
+        ↓
+        Conv2d(2C → C, k=1) + BatchNorm + ReLU
+        ↓
+        Conv2d(C → 1, k=1) + Sigmoid → Gate (B, 1, H, W)
+    
+    Biased Fusion:
+        Output = rgb_weight × F_RGB + spec_weight × Gate × F_Spectral
+    
+    Hyperparameters:
+        Step 1: rgb_weight=0.85, spec_weight=0.15
+        Step 2: rgb_weight=0.30, spec_weight=0.70
+
+Giải thích:
+    - Gate học cách chọn lọc thông tin Spectral phù hợp
+    - rgb_weight/spec_weight điều chỉnh bias cố định
+    - Step 1 ưu tiên RGB (màu sắc) cho Healthy detection
+    - Step 2 ưu tiên Spectral (phổ) cho disease discrimination
+
+
+─────────────────────────────────────────────────────────────────────────────
+2. MultiHeadSpectralAttention Module
+─────────────────────────────────────────────────────────────────────────────
+
+Mục đích: Fusion MS và HS thông qua cross-attention
+
+Architecture:
+    Input: MS (B,128,7,7), HS (B,128,7,7)
+    
+    Reshape to sequence:
+        MS → (B, 49, 128)  # 7×7 spatial positions
+        HS → (B, 49, 128)
+    
+    Multi-head Attention:
+        Concat [MS, HS] → (B, 49, 256)
+        ↓
+        MultiheadAttention(embed_dim=256, num_heads=4, dropout=0.1)
+        ↓
+        Output (B, 49, 256)
+    
+    Reshape back:
+        (B, 49, 256) → (B, 256, 7, 7)
+
+Giải thích:
+    - Học correlation giữa MS và HS ở mỗi vị trí không gian
+    - 4 heads cho phép học nhiều patterns khác nhau
+    - Dropout 0.1 để regularization
+
+
+─────────────────────────────────────────────────────────────────────────────
+3. RGB Handcrafted Feature Extraction
+─────────────────────────────────────────────────────────────────────────────
+
+Feature Engineering Pipeline:
+
+    A. GLCM Texture Features (36 dims)
+       ───────────────────────────────
+       Input: RGB image
+       
+       For each channel (R, G, B):
+           ├─ Compute GLCM matrix
+           │  └─ distances=[1], angles=[0°, 45°, 90°, 135°]
+           ├─ Extract properties:
+           │  ├─ Contrast (4 angles × 1 distance = 4 values)
+           │  ├─ Homogeneity (4 values)
+           │  └─ Correlation (4 values)
+           └─ Total: 12 values per channel
+       
+       Output: 12 × 3 channels = 36 features
+
+    B. LBP Multiscale Features (30 dims)
+       ──────────────────────────────────
+       Input: Green channel (most informative for vegetation)
+       
+       For each radius R ∈ {1, 2, 3}:
+           ├─ Compute LBP with P=8 neighbors
+           ├─ Use 'uniform' pattern (10 bins)
+           └─ Normalize histogram
+       
+       Output: 10 × 3 scales = 30 features
+
+    C. Color Features (18 dims)
+       ─────────────────────────
+       C1. HSV Statistics (12 dims):
+           For each channel (H, S, V):
+               └─ [mean, std, min, max] = 4 × 3 = 12
+       
+       C2. ExG (Excess Green Index) (3 dims):
+           ExG = 2×G - R - B
+           └─ [mean, std, range] = 3
+       
+       C3. VARI (Visible Atmospherically Resistant Index) (3 dims):
+           VARI = (G - R) / (G + R - B)
+           └─ [mean, std, range] = 3
+       
+       Output: 12 + 3 + 3 = 18 features
+
+Total RGB Handcrafted Features: 36 + 30 + 18 = 84 dimensions
+
+Usage:
+    - Chỉ sử dụng trong Step 1 (Healthy vs Diseased)
+    - Không dùng trong Step 2 (vì Spectral đã đủ mạnh)
+    - Projection: 84 → 128 → Concat với CNN features
+
+
+─────────────────────────────────────────────────────────────────────────────
+4. Data Augmentation Strategy
+─────────────────────────────────────────────────────────────────────────────
+
+Philosophy: Light augmentation để tránh overfitting nhưng giữ tính chất vật lý
+
+RGB Augmentation (via Albumentations):
+    Preprocessing:
+        Resize(256×256)
+    
+    Geometric (if training):
+        ├─ HorizontalFlip(p=0.5)
+        ├─ VerticalFlip(p=0.5)
+        └─ Rotate(limit=±15°, p=0.5)
+    
+    Photometric (if training):
+        └─ RandomBrightnessContrast(
+               brightness_limit=0.15,
+               contrast_limit=0.15,
+               p=0.3
+           )
+    
+    Finalization:
+        ├─ CenterCrop(224×224)
+        └─ Normalize(mean=ImageNet, std=ImageNet)
+
+MS/HS Augmentation:
+    Preprocessing:
+        Resize(256×256)
+    
+    Geometric (same as RGB):
+        ├─ HorizontalFlip(p=0.5)
+        ├─ VerticalFlip(p=0.5)
+        └─ Rotate(limit=±15°, p=0.5)
+    
+    Finalization:
+        CenterCrop(224×224)
+    
+    Custom Spectral Augmentation (if training):
+        ├─ Gaussian Noise (p=0.3):
+        │  └─ Add noise ~ N(0, 0.01)
+        │
+        └─ Channel Dropout (p=0.2):
+           ├─ MS: Drop 1 random band
+           └─ HS: Drop 1-2 random bands
+    
+    Clipping:
+        All values clamped to [0, 1]
+
+Note:
+    - Augmentation parameters KHÁC NHAU cho RGB vs MS/HS
+    - Tránh normalize MS/HS quá mạnh (giữ physical meaning)
+    - Random seed KHÔNG sync giữa modalities (tăng diversity)
+
+
+================================================================================
+V. THÔNG SỐ MÔ HÌNH
+================================================================================
+
+Total Parameters Breakdown:
+────────────────────────────
+
+1. RGB Branch:
+   ├─ ResNet18 Backbone: ~11.2M params (FROZEN)
+   ├─ Handcrafted Projection: ~11K params (84→128→128)
+   └─ RGB Fusion Layer: ~328K params (640→512)
+
+2. MS Encoder:
+   └─ Total: ~103K params (5→32→64→128)
+
+3. HS Encoder:
+   └─ Total: ~147K params (125→64→128)
+
+4. Spectral Fusion:
+   ├─ MultiHeadAttention: ~262K params (256-dim, 4 heads)
+   └─ Projection: ~131K params (256→512)
+
+5. Step 1 Components:
+   ├─ BiasedContextGate: ~263K params
+   └─ Classification Head: ~229K params (512→256→128→2)
+
+6. Step 2 Components:
+   ├─ BiasedContextGate: ~263K params
+   └─ Classification Head: ~229K params (512→256→128→2)
+
+────────────────────────────
+Total: ~13.2M parameters
+Trainable: ~2.0M parameters (~15%)
+────────────────────────────
+
+
+Training Configuration:
+───────────────────────
+
+Hyperparameters:
+    Batch Size: [Tùy GPU memory, thường 8-16]
+    Learning Rate: 1e-4
+    Weight Decay: 1e-3
+    Optimizer: AdamW
+    Scheduler: ReduceLROnPlateau(mode='max', patience=5, factor=0.5)
+    
+    Dropout:
+        ├─ Feature extraction: 0.4
+        ├─ Classifier hidden layers: 0.5
+        └─ Handcrafted projection: 0.3
+
+Class Weights:
+    Phase 1 (Step 1):
+        [Healthy: 1.5, Diseased: 1.0]
+        └─ Boost Healthy để giảm false negatives
+    
+    Phase 2 (Step 2):
+        [Rust: 1.0, Other: 1.0]
+        └─ Balanced (hoặc điều chỉnh theo tỷ lệ thực tế)
+
+Regularization Techniques:
+    ✓ Weight Decay (L2 regularization)
+    ✓ Dropout layers
+    ✓ Batch Normalization
+    ✓ Data Augmentation
+    ✓ Early Stopping (implicit via best model saving)
+
+
+================================================================================
+VI. CHIẾN LƯỢC INFERENCE
+================================================================================
+
+Forward Pass Logic:
+───────────────────
+
+Input: RGB, MS, HS, [RGB_handcrafted]
+
+Step 1: Extract Shared Features
+    ├─ F_RGB_CNN = ResNet18(RGB)  # (B, 512, 7, 7)
+    ├─ F_MS = MS_Encoder(MS)      # (B, 128, 7, 7)
+    ├─ F_HS = HS_Encoder(HS)      # (B, 128, 7, 7)
+    └─ F_Spectral = Fusion(F_MS, F_HS)  # (B, 512, 7, 7)
+
+Step 2: Enhance RGB (if Step 1)
+    ├─ F_RGB_pooled = AdaptiveAvgPool(F_RGB_CNN)  # (B, 512)
+    ├─ F_handcrafted = Projection(RGB_handcrafted)  # (B, 128)
+    ├─ F_concat = Concat[F_RGB_pooled, F_handcrafted]  # (B, 640)
+    ├─ F_RGB_fused = Linear(F_concat)  # (B, 512)
+    └─ F_RGB = Reshape(F_RGB_fused, (B, 512, 7, 7))
+
+Step 3: Biased Fusion & Classification
+    Mode 'step1':
+        ├─ F_step1 = BiasedGate1(F_RGB, F_Spectral)  # 85% RGB
+        └─ Output = Head1(F_step1)  # (B, 2)
+    
+    Mode 'step2':
+        ├─ F_step2 = BiasedGate2(F_RGB, F_Spectral)  # 30% RGB
+        └─ Output = Head2(F_step2)  # (B, 2)
+    
+    Mode 'both':
+        ├─ Step1_logits = Head1(BiasedGate1(...))
+        ├─ Step2_logits = Head2(BiasedGate2(...))
+        │
+        ├─ P1 = Softmax(Step1_logits)  # [P(H), P(D)]
+        ├─ P2 = Softmax(Step2_logits)  # [P(R|D), P(O|D)]
+        │
+        ├─ P(Healthy) = P1[0]
+        ├─ P(Rust) = P1[1] × P2[0]
+        ├─ P(Other) = P1[1] × P2[1]
+        │
+        └─ Final_logits = log([P(H), P(R), P(O)])
+
+
+Prediction Pipeline:
+────────────────────
+
+1. Load Model:
+   model = TwoStepWheatNet()
+   model.load_state_dict(torch.load('best_model_twostep_final.pth'))
+   model.eval()
+
+2. Preprocess Input:
+   ├─ RGB: Resize → CenterCrop → Normalize
+   ├─ MS: Resize → CenterCrop → [0,1]
+   ├─ HS: Resize → CenterCrop → [0,1]
+   └─ Handcrafted: Extract features từ RGB gốc
+
+3. Forward Pass:
+   logits = model(rgb, ms, hs, rgb_handcrafted=None, step='both')
+   probs = F.softmax(logits, dim=1)
+   pred = torch.argmax(probs, dim=1)
+
+4. Post-processing:
+   Class Mapping:
+       0 → 'Healthy'
+       1 → 'Rust'
+       2 → 'Other'
+
+
+================================================================================
+VII. ĐÁNH GIÁ VÀ METRICS
+================================================================================
+
+Evaluation Metrics:
+───────────────────
+
+1. Per-Phase Metrics:
+   
+   Phase 1 (Step 1: Binary Healthy vs Diseased):
+       ├─ Accuracy
+       ├─ Precision, Recall, F1-score (per class)
+       └─ Confusion Matrix (2×2):
+              Predicted: Healthy | Diseased
+          True Healthy:   TP_H   |  FN_H
+          True Diseased:  FP_H   |  TN_H
+
+   Phase 2 (Step 2: Binary Rust vs Other):
+       ├─ Accuracy (on diseased samples only)
+       ├─ Precision, Recall, F1-score (per class)
+       └─ Confusion Matrix (2×2):
+              Predicted: Rust | Other
+          True Rust:     TP_R |  FN_R
+          True Other:    FP_R |  TN_R
+
+   Phase 3 (Final 3-Class):
+       ├─ Overall Accuracy
+       ├─ Per-class Precision, Recall, F1-score
+       └─ Confusion Matrix (3×3):
+              Predicted: Health | Rust | Other
+          True Health:    TP_H  | FN_HR | FN_HO
+          True Rust:      FP_RH | TP_R  | FN_RO
+          True Other:     FP_OH | FP_OR | TP_O
+
+
+2. Expected Performance:
+   
+   Best Case Scenario (với dữ liệu tốt):
+       Step 1 Acc: > 90% (Healthy vs Diseased rõ ràng)
+       Step 2 Acc: > 85% (Rust vs Other khó hơn)
+       Final 3-Class Acc: > 80%
+   
+   Critical Metrics to Monitor:
+       ├─ Healthy Recall (tránh miss bệnh)
+       ├─ Rust Precision (tránh false alarm cho bệnh nghiêm trọng)
+       └─ Overall Balanced Accuracy (tránh bias vào class đa số)
+
+
+3. Confusion Analysis:
+   
+   Common Errors Expected:
+       ├─ Health ↔ Other (ít, nhờ Step 1 mạnh)
+       ├─ Health ↔ Rust (rất ít, đã giải quyết bằng two-step)
+       └─ Rust ↔ Other (có thể cao nếu Spectral signal yếu)
+   
+   Debugging Strategy:
+       Nếu Step 1 Acc thấp → Kiểm tra RGB features/augmentation
+       Nếu Step 2 Acc thấp → Kiểm tra Spectral features/SNR
+       Nếu Final Acc thấp nhưng Steps tốt → Kiểm tra probability fusion logic
+
+
+================================================================================
+VIII. CẤU TRÚC FILE VÀ DEPENDENCIES
+================================================================================
+
+File Organization:
+──────────────────
+
+Project Root: d:\Kaggle\QuangPho\
+
+├─ src/
+│  ├─ model/
+│  │  ├─ Layer1/
+│  │  │  ├─ CNNRGB.py               # ResNet18 RGB extractor
+│  │  │  ├─ HSExaction.py           # HS feature extractor
+│  │  │  ├─ MSExaction.py           # MS feature extractor
+│  │  │  └─ RGBExaction.py          # RGB dataset loader
+│  │  │
+│  │  ├─ Layer2/
+│  │  │  ├─ AttentionFusion.py      # MultiHeadSpectralAttention
+│  │  │  ├─ FullFusion.py           # Alternative fusion methods
+│  │  │  └─ SoftCompetitionFusion.py
+│  │  │
+│  │  ├─ OutputLayer/
+│  │  │  └─ OutputLayer.py          # Classification heads
+│  │  │
+│  │  └─ Pipeline/
+│  │     ├─ PipelineV1_Stage1_TwoStep.py  # ★ MAIN MODEL
+│  │     ├─ PipelineV1_Stage1.py
+│  │     ├─ PipelineV1_Improved.py
+│  │     ├─ PipelineV1_KFold.py
+│  │     └─ PipelineV1.py
+│  │
+│  ├─ FeatureEngineering/
+│  │  ├─ RGBFeature.py              # GLCM, LBP, Color indices
+│  │  ├─ MSFeature.py               # MS spectral indices
+│  │  └─ HSFeature.py               # HS spectral signatures
+│  │
+│  └─ Preprocessing/
+│     ├─ Preprocessing.py           # General preprocessing
+│     └─ PreRGB.py                  # RGB transforms
+│
+├─ Data/
+│  ├─ train/
+│  │  ├─ RGB/    # Health*.png, Rust*.png, Other*.png
+│  │  ├─ MS/     # *.tif (5 bands)
+│  │  └─ HS/     # *.tif (125 bands)
+│  │
+│  └─ val/
+│     ├─ RGB/
+│     ├─ MS/
+│     └─ HS/
+│
+└─ checkpoints/
+   ├─ best_model_step1.pth          # Phase 1 output
+   ├─ best_model_step2.pth          # Phase 2 output
+   └─ best_model_twostep_final.pth  # Final model
+
+
+Dependencies:
+─────────────
+
+Core Libraries:
+    ├─ torch >= 1.12
+    ├─ torchvision >= 0.13
+    ├─ numpy >= 1.21
+    ├─ opencv-python >= 4.6
+    ├─ Pillow >= 9.0
+    └─ scikit-image >= 0.19
+
+Data Handling:
+    ├─ tifffile >= 2022.5.4  (for MS/HS .tif reading)
+    ├─ albumentations >= 1.3  (augmentation pipeline)
+    └─ scikit-learn >= 1.0  (metrics, class_weight)
+
+Optional:
+    ├─ matplotlib (visualization)
+    ├─ seaborn (confusion matrix plotting)
+    └─ tensorboard (training monitoring)
+
+
+Installation:
+─────────────
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install albumentations tifffile opencv-python Pillow scikit-image scikit-learn
+
+
+================================================================================
+IX. HƯỚNG DẪN SỬ DỤNG
+================================================================================
+
+1. Chuẩn bị Dữ liệu:
+   ─────────────────
+   
+   Cấu trúc thư mục:
+       Data/
+       ├─ train/
+       │  ├─ RGB/
+       │  │  ├─ Health_001.png
+       │  │  ├─ Rust_001.png
+       │  │  └─ Other_001.png
+       │  ├─ MS/
+       │  │  ├─ Health_001.tif  (5 bands)
+       │  │  ├─ Rust_001.tif
+       │  │  └─ Other_001.tif
+       │  └─ HS/
+       │     ├─ Health_001.tif  (125 bands)
+       │     ├─ Rust_001.tif
+       │     └─ Other_001.tif
+       └─ val/ (cấu trúc tương tự)
+   
+   Naming Convention:
+       - Bắt đầu bằng class name: Health*, Rust*, Other*
+       - Cùng stem name cho 3 modalities (RGB, MS, HS)
+
+
+2. Training:
+   ─────────
+   
+   python src/model/Pipeline/PipelineV1_Stage1_TwoStep.py
+   
+   Quy trình tự động:
+       Phase 1: Train Step 1 (20 epochs)
+       → Save best_model_step1.pth
+       
+       Phase 2: Train Step 2 (20 epochs)
+       → Save best_model_step2.pth
+       
+       Phase 3: Evaluate 3-class
+       → Save best_model_twostep_final.pth
+
+
+3. Inference:
+   ──────────
+   
+   import torch
+   from src.model.Pipeline.PipelineV1_Stage1_TwoStep import TwoStepWheatNet
+   
+   # Load model
+   model = TwoStepWheatNet()
+   model.load_state_dict(torch.load('checkpoints/best_model_twostep_final.pth'))
+   model.eval()
+   
+   # Prepare input (example)
+   rgb = preprocess_rgb(rgb_path)
+   ms = preprocess_ms(ms_path)
+   hs = preprocess_hs(hs_path)
+   
+   # Predict
+   with torch.no_grad():
+       logits = model(rgb, ms, hs, step='both')
+       probs = F.softmax(logits, dim=1)
+       pred = torch.argmax(probs, dim=1)
+   
+   class_names = ['Healthy', 'Rust', 'Other']
+   print(f"Prediction: {class_names[pred.item()]}")
+   print(f"Confidence: {probs[0, pred].item():.2%}")
+
+
+4. Fine-tuning:
+   ────────────
+   
+   Để fine-tune cho dataset mới:
+       1. Load checkpoint:
+          model.load_state_dict(torch.load('checkpoints/best_model_twostep_final.pth'))
+       
+       2. Unfreeze components cần train:
+          # Ví dụ: Chỉ fine-tune classification heads
+          for param in model.step1_head.parameters():
+              param.requires_grad = True
+          for param in model.step2_head.parameters():
+              param.requires_grad = True
+       
+       3. Train với learning rate thấp hơn:
+          optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()),
+                           lr=1e-5)
+
+
+================================================================================
+X. KẾT LUẬN VÀ HƯỚNG PHÁT TRIỂN
+================================================================================
+
+Điểm Mạnh của Mô hình:
+───────────────────────
+
+✓ Hierarchical Decision Making: Giải quyết vấn đề confusion giữa Health-Rust
+✓ Multi-modal Fusion: Tận dụng ưu điểm của RGB, MS, HS
+✓ Adaptive Weighting: BiasedContextGate điều chỉnh tỷ trọng theo task
+✓ Feature Engineering: Kết hợp Deep Learning + Handcrafted features
+✓ Robust Training: Regularization mạnh mẽ, data augmentation đa dạng
+
+
+Giới Hạn và Thách Thức:
+────────────────────────
+
+⚠ Data Hungry: Cần lượng lớn labeled data cho 3 modalities
+⚠ Computational Cost: Inference chậm hơn single-step models
+⚠ Error Propagation: Lỗi Step 1 ảnh hưởng đến Step 2
+⚠ Calibration: Xác suất cần calibrate kỹ cho final fusion
+⚠ Generalization: Có thể overfit nếu data không đủ diverse
+
+
+Hướng Phát Triển Tương Lai:
+────────────────────────────
+
+1. Architecture Improvements:
+   ├─ Thử Transformer-based backbone (ViT, Swin)
+   ├─ Dynamic gate network (học cả spatial weights)
+   ├─ Uncertainty estimation (Monte Carlo Dropout, Ensembles)
+   └─ Multi-scale fusion (FPN, PANet)
+
+2. Training Enhancements:
+   ├─ Curriculum Learning (easy samples → hard samples)
+   ├─ Contrastive Learning (Spectral signatures)
+   ├─ Semi-supervised Learning (Pseudo-labeling)
+   └─ Domain Adaptation (Transfer across regions/seasons)
+
+3. Data & Features:
+   ├─ Active Learning để chọn samples quan trọng
+   ├─ Thêm Temporal features (multi-date images)
+   ├─ Thêm Environmental metadata (weather, soil)
+   └─ Self-supervised pre-training trên unlabeled data
+
+4. Deployment:
+   ├─ Model Quantization (INT8) cho mobile devices
+   ├─ Knowledge Distillation → Single-step student model
+   ├─ ONNX export cho cross-platform inference
+   └─ TensorRT optimization cho real-time processing
+
+
+Use Cases Khác:
+────────────────
+
+Mô hình này có thể adapt cho:
+   ├─ Crop disease detection (corn, rice, potato, etc.)
+   ├─ Plant stress monitoring (drought, nutrient deficiency)
+   ├─ Food quality inspection (fruit sorting, meat grading)
+   └─ Remote sensing (land cover classification, change detection)
+
+
+================================================================================
+XI. THAM KHẢO VÀ CREDITS
+================================================================================
+
+Key Techniques Used:
+────────────────────
+
+1. Transfer Learning:
+   - ResNet18 pretrained on ImageNet
+   - Reference: He et al., "Deep Residual Learning" (CVPR 2016)
+
+2. Multi-modal Fusion:
+   - Attention-based fusion
+   - Reference: Vaswani et al., "Attention Is All You Need" (NIPS 2017)
+
+3. Hierarchical Classification:
+   - Coarse-to-fine approach
+   - Reference: Yan et al., "HD-CNN" (ICCV 2015)
+
+4. Feature Engineering:
+   - GLCM: Haralick et al. (1973)
+   - LBP: Ojala et al. (2002)
+   - Vegetation Indices: Tucker (1979), Gitelson et al. (2002)
+
+
+Tools & Libraries:
+──────────────────
+
+- PyTorch: https://pytorch.org
+- Albumentations: https://albumentations.ai
+- scikit-image: https://scikit-image.org
+- OpenCV: https://opencv.org
+
+
+================================================================================
+                            --- END OF DOCUMENT ---
+================================================================================
+
+📋 Tài liệu này được tạo tự động từ source code
+🔄 Last Updated: 04/02/2026
+✉️  Contact: [Your Email/GitHub]
+📁 Repository: d:\Kaggle\QuangPho\
