@@ -12,7 +12,11 @@ class Inferencer:
 
     def predict(self, model_path=None, output_csv="submission.csv"):
         if model_path:
-            self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=True))
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+            if 'model_state_dict' in checkpoint:
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.model.load_state_dict(checkpoint)
             print(f"Loaded model from: {model_path}")
             
         self.model.eval()

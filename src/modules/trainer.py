@@ -55,13 +55,28 @@ class Trainer:
         
         return total_loss / total, correct / total
 
-    def train(self):
-        print(f"Starting training for {self.epochs} epochs...")
+    def train(self, resume_path=None):
+        start_epoch = 1
+        if resume_path and os.path.exists(resume_path):
+            print(f"Resuming from checkpoint: {resume_path}")
+            checkpoint = torch.load(resume_path, map_location=self.device, weights_only=False)
+            if 'model_state_dict' in checkpoint:
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                start_epoch = checkpoint.get('epoch', 0) + 1
+                self.best_val_acc = checkpoint.get('best_val_acc', 0.0)
+                if 'history' in checkpoint:
+                    self.history = checkpoint['history']
+            else:
+                self.model.load_state_dict(checkpoint) # fallback
+                
+        print(f"Starting training from epoch {start_epoch} to {self.epochs}...")
         
         # Ensure checkpoint directory exists
         os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
         
-        for epoch in range(1, self.epochs + 1):
+        for epoch in range(start_epoch, self.epochs + 1):
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.evaluate()
             
@@ -74,10 +89,44 @@ class Trainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_acc"].append(val_acc)
             
-            # Save best model
-            if val_acc > self.best_val_acc:
+            # Log to wandb
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.log({
+                        "epoch": epoch,
+                        "train/loss": train_loss,
+                        "train/acc": train_acc,
+                        "val/loss": val_loss,
+                        "val/acc": val_acc,
+                        "lr": self.optimizer.param_groups[0]['lr']
+                    })
+            except ImportError:
+                print("Wandb not installed")
+                pass
+            
+            # Update best val_acc
+            is_best = val_acc > self.best_val_acc
+            if is_best:
                 self.best_val_acc = val_acc
-                torch.save(self.model.state_dict(), self.save_path)
+                
+            # Create checkpoint state
+            checkpoint_state = {
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'scheduler_state_dict': self.scheduler.state_dict(),
+                'best_val_acc': self.best_val_acc,
+                'history': self.history
+            }
+            
+            # Save last model
+            last_save_path = self.save_path.replace('.pth', '_last.pth')
+            torch.save(checkpoint_state, last_save_path)
+            
+            # Save best model
+            if is_best:
+                torch.save(checkpoint_state, self.save_path)
                 print(f"Epoch {epoch:02d} | train_acc={train_acc:.4f} val_acc={val_acc:.4f} ⭐ BEST")
             else:
                 print(f"Epoch {epoch:02d} | train_acc={train_acc:.4f} val_acc={val_acc:.4f}")

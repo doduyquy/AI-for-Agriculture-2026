@@ -11,7 +11,11 @@ class Evaluator:
 
     def evaluate(self, model_path=None):
         if model_path:
-            self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=True))
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+            if 'model_state_dict' in checkpoint:
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.model.load_state_dict(checkpoint)
             print(f"Loaded model from: {model_path}")
             
         self.model.eval()
@@ -32,5 +36,6 @@ class Evaluator:
         
         print("\\nClassification Report:")
         print(classification_report(y_true, y_pred, target_names=self.class_names))
+        report_dict = classification_report(y_true, y_pred, target_names=self.class_names, output_dict=True)
         
-        return y_true, y_pred
+        return y_true, y_pred, report_dict

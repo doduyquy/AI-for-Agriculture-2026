@@ -20,6 +20,12 @@ def main():
     # Load config from YAMLs
     cfg = load_config(args.configs)
     
+    if args.wandb:
+        import wandb
+        run_name = args.wandb_run_name if args.wandb_run_name else f"{cfg.MODEL_NAME}_imgsize{cfg.IMG_SIZE}_batch{cfg.BATCH_SIZE}_lr{cfg.LR}"
+        wandb.init(project=args.wandb_project, entity=args.wandb_entity, name=run_name, config=dict(cfg))
+        wandb.config.update(vars(args))
+    
     # 1. Initialization
     set_seed(cfg.SEED)
     device = cfg.device
@@ -76,17 +82,45 @@ def main():
         epochs=cfg.EPOCHS
     )
     
-    history = trainer.train()
+    history = trainer.train(resume_path=args.resume)
     
     # 6. Evaluation
     class_names = [val_ds.idx_to_class[i] for i in range(cfg.NUM_CLASSES)]
     evaluator = Evaluator(model, val_loader, device, class_names)
-    evaluator.evaluate(model_path=save_path)
+    y_true, y_pred, report_dict = evaluator.evaluate(model_path=save_path)
     
     # 7. Inference
     inferencer = Inferencer(model, test_loader, device, val_ds.idx_to_class)
     submission_path = os.path.join(cfg.ROOT_DIR, "submission.csv")
     inferencer.predict(model_path=save_path, output_csv=submission_path)
+    
+    if args.wandb:
+        import wandb
+        
+        # Log classification report metrics
+        for class_name, metrics in report_dict.items():
+            if isinstance(metrics, dict):
+                for metric_name, value in metrics.items():
+                    wandb.summary[f"eval/{class_name}/{metric_name}"] = value
+            else:
+                wandb.summary[f"eval/{class_name}"] = metrics
+                
+        # Log confusion matrix
+        wandb.log({"conf_mat" : wandb.plot.confusion_matrix(probs=None,
+                        y_true=y_true, preds=y_pred,
+                        class_names=class_names)})
+        
+        # Save submission file as artifact
+        artifact = wandb.Artifact('submission', type='dataset')
+        artifact.add_file(submission_path)
+        wandb.log_artifact(artifact)
+        
+        # Save best model checkpoint to wandb
+        model_artifact = wandb.Artifact('best-model', type='model')
+        model_artifact.add_file(save_path)
+        wandb.log_artifact(model_artifact)
+        
+        wandb.finish()
 
 if __name__ == "__main__":
     main()

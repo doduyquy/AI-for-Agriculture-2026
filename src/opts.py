@@ -13,5 +13,34 @@ def parse_args():
         ], 
         help="Paths to config files"
     )
+    parser.add_argument(
+        "--wandb", 
+        action="store_true", 
+        help="Enable wandb logging"
+    )
+    parser.add_argument(
+        "--wandb_project", 
+        type=str, 
+        default="AI-for-Agriculture-2026", 
+        help="Wandb project name"
+    )
+    parser.add_argument(
+        "--wandb_run_name", 
+        type=str, 
+        default=None, 
+        help="Wandb run name"
+    )
+    parser.add_argument(
+        "--wandb_entity", 
+        type=str, 
+        default=None, 
+        help="Wandb entity (username or team name)"
+    )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume training from"
+    )
     args = parser.parse_args()
     return args
