@@ -1,6 +1,6 @@
 # Training hyperparameters
-SEED: 42
-BATCH_SIZE: 8
-EPOCHS: 20
-LR: 0.0001
-VAL_SPLIT: 0.2
+SEED: 42 # Hạt giống ngẫu nhiên để đảm bảo tính lặp lại
+BATCH_SIZE: 8 # Số lượng mẫu trong một batch
+EPOCHS: 20 # Số vòng lặp qua toàn bộ tập dữ liệu huấn luyện
+LR: 0.0001 # Tốc độ học (Learning Rate)
+VAL_SPLIT: 0.2 # Tỉ lệ chia tập dữ liệu cho validation (20%)

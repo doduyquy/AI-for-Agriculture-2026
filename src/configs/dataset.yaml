@@ -1,6 +1,6 @@
 # Dataset settings
-IMG_SIZE: 224
+IMG_SIZE: 224 # Kích thước ảnh đầu vào (pixel)
 
 # Normalization statistics (ImageNet)
-MEAN: [0.485, 0.456, 0.406]
-STD: [0.229, 0.224, 0.225]
+MEAN: [0.485, 0.456, 0.406] # Giá trị trung bình chuẩn hóa theo ImageNet
+STD: [0.229, 0.224, 0.225] # Độ lệch chuẩn chuẩn hóa theo ImageNet
