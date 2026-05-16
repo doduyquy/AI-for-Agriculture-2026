@@ -11,3 +11,11 @@ wandb/
 
 # Jupyter
 .ipynb_checkpoints/
+
+*__pycache__*
+
+*.pt
+
+*.pth
+
+*.pt1

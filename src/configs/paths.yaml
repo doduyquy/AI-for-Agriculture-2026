@@ -1,0 +1,13 @@
+# Paths (relative to project root)
+DATA_DIR: 'data/raw'
+NOTEBOOKS_DIR: 'notebooks'
+CHECKPOINT_DIR: 'checkpoints'
+TRAIN_DIR: 'data/raw/train'
+TEST_DIR: 'data/raw/test'
+TRAIN_RGB_DIR: 'data/raw/train/RGB'
+TEST_RGB_DIR: 'data/raw/test/RGB'
+SPLIT_DIR: 'notebooks/split/splits'
+SAMPLES_MASTER: 'notebooks/split/splits/samples_master.csv'
+TRAIN_IDX_FILE: 'notebooks/split/splits/train_idx.npy'
+VAL_IDX_FILE: 'notebooks/split/splits/val_idx.npy'
+ROOT_DIR: '.'
