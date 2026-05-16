@@ -1,0 +1,3 @@
+# Model hyperparameters
+NUM_CLASSES: 3
+MODEL_NAME: "resnet18"

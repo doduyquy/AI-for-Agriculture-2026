@@ -1,0 +1,6 @@
+# Training hyperparameters
+SEED: 42
+BATCH_SIZE: 8
+EPOCHS: 20
+LR: 0.0001
+VAL_SPLIT: 0.2

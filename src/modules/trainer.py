@@ -1,0 +1,87 @@
+import os
+import torch
+import numpy as np
+
+class Trainer:
+    def __init__(self, model, train_loader, val_loader, criterion, optimizer, scheduler, device, save_path, epochs):
+        self.model = model
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.criterion = criterion
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.device = device
+        self.save_path = save_path
+        self.epochs = epochs
+        
+        self.history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
+        self.best_val_acc = 0.0
+
+    def train_one_epoch(self):
+        self.model.train()
+        total_loss, correct, total = 0.0, 0, 0
+        
+        for images, labels in self.train_loader:
+            images, labels = images.to(self.device), labels.to(self.device)
+            
+            self.optimizer.zero_grad()
+            outputs = self.model(images)
+            loss = self.criterion(outputs, labels)
+            loss.backward()
+            self.optimizer.step()
+            
+            total_loss += loss.item() * images.size(0)
+            preds = outputs.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+        
+        return total_loss / total, correct / total
+
+    @torch.no_grad()
+    def evaluate(self):
+        self.model.eval()
+        total_loss, correct, total = 0.0, 0, 0
+        
+        for images, labels in self.val_loader:
+            images, labels = images.to(self.device), labels.to(self.device)
+            
+            outputs = self.model(images)
+            loss = self.criterion(outputs, labels)
+            
+            total_loss += loss.item() * images.size(0)
+            preds = outputs.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+        
+        return total_loss / total, correct / total
+
+    def train(self):
+        print(f"Starting training for {self.epochs} epochs...")
+        
+        # Ensure checkpoint directory exists
+        os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
+        
+        for epoch in range(1, self.epochs + 1):
+            train_loss, train_acc = self.train_one_epoch()
+            val_loss, val_acc = self.evaluate()
+            
+            # Scheduler step
+            self.scheduler.step(val_acc)
+            
+            # Save history
+            self.history["train_loss"].append(train_loss)
+            self.history["train_acc"].append(train_acc)
+            self.history["val_loss"].append(val_loss)
+            self.history["val_acc"].append(val_acc)
+            
+            # Save best model
+            if val_acc > self.best_val_acc:
+                self.best_val_acc = val_acc
+                torch.save(self.model.state_dict(), self.save_path)
+                print(f"Epoch {epoch:02d} | train_acc={train_acc:.4f} val_acc={val_acc:.4f} ⭐ BEST")
+            else:
+                print(f"Epoch {epoch:02d} | train_acc={train_acc:.4f} val_acc={val_acc:.4f}")
+
+        print(f"\\n✓ Best val_acc: {self.best_val_acc:.4f}")
+        print(f"✓ Model saved to: {self.save_path}")
+        return self.history
