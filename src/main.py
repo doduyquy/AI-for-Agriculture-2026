@@ -6,7 +6,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
 
 from src.modules.utils import load_config, set_seed, get_filename_crossplatform
 from src.modules.dataset import RGBDataset, RGBTestDataset, get_transforms
@@ -61,18 +60,16 @@ def main():
     # 2. Data Preparation
     tfm_train, tfm_val = get_transforms(cfg)
     
-    # 2.5 Automatically discover and split dataset
-    all_train_files = sorted([f for f in os.listdir(cfg.TRAIN_RGB_DIR) if f.lower().endswith(".png")])
+    # 2.5 Validate data directories exist
+    if not os.path.exists(cfg.TRAIN_RGB_DIR):
+        raise FileNotFoundError(f"Không tìm thấy thư mục train: {cfg.TRAIN_RGB_DIR}")
+    if not os.path.exists(cfg.VAL_RGB_DIR):
+        raise FileNotFoundError(f"Không tìm thấy thư mục val: {cfg.VAL_RGB_DIR}")
     
-    if len(all_train_files) == 0:
-        raise FileNotFoundError(f"Không tìm thấy ảnh .png nào trong {cfg.TRAIN_RGB_DIR}")
-        
-    train_files, val_files = train_test_split(all_train_files, test_size=0.2, random_state=cfg.SEED)
-    
-    # Create datasets
-    train_ds = RGBDataset(cfg.TRAIN_RGB_DIR, transform=tfm_train, file_list=train_files)
-    val_ds = RGBDataset(cfg.TRAIN_RGB_DIR, transform=tfm_val, file_list=val_files)
-    test_ds = RGBTestDataset(cfg.TEST_RGB_DIR, transform=tfm_val)
+    # Create datasets – dùng đúng cấu trúc train/val gốc từ Kaggle
+    train_ds = RGBDataset(cfg.TRAIN_RGB_DIR, transform=tfm_train)  # 100% train
+    val_ds   = RGBDataset(cfg.VAL_RGB_DIR,   transform=tfm_val)    # val gốc Kaggle
+    test_ds  = RGBTestDataset(cfg.TEST_RGB_DIR, transform=tfm_val)
     
     # Create dataloaders
     train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=0)
