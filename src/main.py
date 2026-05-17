@@ -31,14 +31,20 @@ def main():
         cfg.DATA_DIR = args.data_dir
         cfg.TRAIN_DIR = os.path.join(cfg.DATA_DIR, 'train')
         cfg.TRAIN_RGB_DIR = os.path.join(cfg.TRAIN_DIR, 'RGB')
-        
-        # Check if 'test' or 'val' folder exists in data_dir
-        if os.path.exists(os.path.join(cfg.DATA_DIR, 'val')) and not os.path.exists(os.path.join(cfg.DATA_DIR, 'test')):
-            cfg.TEST_DIR = os.path.join(cfg.DATA_DIR, 'val')
-        else:
-            cfg.TEST_DIR = os.path.join(cfg.DATA_DIR, 'test')
-        
-        cfg.TEST_RGB_DIR = os.path.join(cfg.TEST_DIR, 'RGB')
+
+        # Detect val / test folder
+        val_path  = os.path.join(cfg.DATA_DIR, 'val')
+        test_path = os.path.join(cfg.DATA_DIR, 'test')
+        if os.path.exists(val_path):
+            cfg.VAL_DIR     = val_path
+            cfg.VAL_RGB_DIR = os.path.join(val_path, 'RGB')
+        if os.path.exists(test_path):
+            cfg.TEST_DIR     = test_path
+            cfg.TEST_RGB_DIR = os.path.join(test_path, 'RGB')
+        elif os.path.exists(val_path):
+            # No dedicated test folder → reuse val for inference
+            cfg.TEST_DIR     = cfg.VAL_DIR
+            cfg.TEST_RGB_DIR = cfg.VAL_RGB_DIR
     
     if args.wandb:
         import wandb
@@ -61,14 +67,26 @@ def main():
     tfm_train, tfm_val = get_transforms(cfg)
     
     # 2.5 Validate data directories exist
-    if not os.path.exists(cfg.TRAIN_RGB_DIR):
-        raise FileNotFoundError(f"Không tìm thấy thư mục train: {cfg.TRAIN_RGB_DIR}")
-    if not os.path.exists(cfg.VAL_RGB_DIR):
-        raise FileNotFoundError(f"Không tìm thấy thư mục val: {cfg.VAL_RGB_DIR}")
-    
-    # Create datasets – dùng đúng cấu trúc train/val gốc từ Kaggle
-    train_ds = RGBDataset(cfg.TRAIN_RGB_DIR, transform=tfm_train)  # 100% train
-    val_ds   = RGBDataset(cfg.VAL_RGB_DIR,   transform=tfm_val, class_to_idx=train_ds.class_to_idx)    # val gốc Kaggle
+    for attr, desc in [
+        ('TRAIN_RGB_DIR', 'train'),
+        ('VAL_RGB_DIR',   'val'),
+    ]:
+        path = getattr(cfg, attr, None)
+        if not path:
+            raise AttributeError(
+                f"Config thiếu '{attr}'. Kiểm tra lại file paths YAML hoặc tham số --data_dir."
+            )
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Không tìm thấy thư mục {desc}: {path}")
+
+    # TEST_RGB_DIR: fallback về VAL_RGB_DIR nếu chưa có
+    if not getattr(cfg, 'TEST_RGB_DIR', None):
+        print("[WARN] TEST_RGB_DIR chưa được cấu hình → dùng VAL_RGB_DIR làm test set.")
+        cfg.TEST_RGB_DIR = cfg.VAL_RGB_DIR
+
+    # Create datasets – tự động nhận diện cấu trúc flat-file hoặc ImageFolder
+    train_ds = RGBDataset(cfg.TRAIN_RGB_DIR, transform=tfm_train)
+    val_ds   = RGBDataset(cfg.VAL_RGB_DIR,   transform=tfm_val, class_to_idx=train_ds.class_to_idx)
     test_ds  = RGBTestDataset(cfg.TEST_RGB_DIR, transform=tfm_val)
     
     # Create dataloaders
