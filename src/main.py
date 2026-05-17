@@ -21,12 +21,24 @@ def main():
     # Load config from YAMLs
     cfg = load_config(args.configs)
     
+    # Fallback to VAL_DIR/VAL_RGB_DIR if TEST_DIR/TEST_RGB_DIR is missing
+    if not hasattr(cfg, 'TEST_DIR') and hasattr(cfg, 'VAL_DIR'):
+        cfg.TEST_DIR = cfg.VAL_DIR
+    if not hasattr(cfg, 'TEST_RGB_DIR') and hasattr(cfg, 'VAL_RGB_DIR'):
+        cfg.TEST_RGB_DIR = cfg.VAL_RGB_DIR
+    
     # Automatically override paths if --data_dir is provided
     if hasattr(args, 'data_dir') and args.data_dir:
         cfg.DATA_DIR = args.data_dir
         cfg.TRAIN_DIR = os.path.join(cfg.DATA_DIR, 'train')
-        cfg.TEST_DIR = os.path.join(cfg.DATA_DIR, 'test')
         cfg.TRAIN_RGB_DIR = os.path.join(cfg.TRAIN_DIR, 'RGB')
+        
+        # Check if 'test' or 'val' folder exists in data_dir
+        if os.path.exists(os.path.join(cfg.DATA_DIR, 'val')) and not os.path.exists(os.path.join(cfg.DATA_DIR, 'test')):
+            cfg.TEST_DIR = os.path.join(cfg.DATA_DIR, 'val')
+        else:
+            cfg.TEST_DIR = os.path.join(cfg.DATA_DIR, 'test')
+        
         cfg.TEST_RGB_DIR = os.path.join(cfg.TEST_DIR, 'RGB')
     
     if args.wandb:
