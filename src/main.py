@@ -6,6 +6,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import pandas as pd
 import numpy as np
+from sklearn.model_selection import train_test_split
 
 from src.modules.utils import load_config, set_seed, get_filename_crossplatform
 from src.modules.dataset import RGBDataset, RGBTestDataset, get_transforms
@@ -30,6 +31,12 @@ def main():
     
     if args.wandb:
         import wandb
+        
+        # Check for WANDB_API_KEY in environment or arguments
+        wandb_api_key = os.environ.get("WANDB_API_KEY", args.wandb_api_key)
+        if wandb_api_key:
+            wandb.login(key=wandb_api_key)
+            
         run_name = args.wandb_run_name if args.wandb_run_name else f"{cfg.MODEL_NAME}_imgsize{cfg.IMG_SIZE}_batch{cfg.BATCH_SIZE}_lr{cfg.LR}"
         wandb.init(project=args.wandb_project, entity=args.wandb_entity, name=run_name, config=dict(cfg))
         wandb.config.update(vars(args))
@@ -42,16 +49,13 @@ def main():
     # 2. Data Preparation
     tfm_train, tfm_val = get_transforms(cfg)
     
-    # Load splits
-    df = pd.read_csv(cfg.SAMPLES_MASTER)
-    train_idx = np.load(cfg.TRAIN_IDX_FILE)
-    val_idx = np.load(cfg.VAL_IDX_FILE)
+    # 2.5 Automatically discover and split dataset
+    all_train_files = sorted([f for f in os.listdir(cfg.TRAIN_RGB_DIR) if f.lower().endswith(".png")])
     
-    df_train = df.iloc[train_idx].reset_index(drop=True)
-    df_val = df.iloc[val_idx].reset_index(drop=True)
-    
-    train_files = [get_filename_crossplatform(p) for p in df_train["rgb_path"]]
-    val_files = [get_filename_crossplatform(p) for p in df_val["rgb_path"]]
+    if len(all_train_files) == 0:
+        raise FileNotFoundError(f"Không tìm thấy ảnh .png nào trong {cfg.TRAIN_RGB_DIR}")
+        
+    train_files, val_files = train_test_split(all_train_files, test_size=0.2, random_state=cfg.SEED)
     
     # Create datasets
     train_ds = RGBDataset(cfg.TRAIN_RGB_DIR, transform=tfm_train, file_list=train_files)

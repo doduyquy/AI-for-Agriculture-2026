@@ -7,7 +7,8 @@
 # Variables
 WANDB_PROJECT="AI-for-Agriculture"
 WANDB_ENTITY="phucga15062005" # Thay bằng username hoặc team name của bạn
-WANDB_RUN_NAME="${WANDB_RUN_NAME:-ResNet18_Baseline_Exp1_$(date '+%Y%m%d-%H%M')}"
+WANDB_RUN_NAME="${WANDB_NAME:-ResNet18_Baseline_Exp1_$(date '+%Y%m%d-%H%M')}"
+WANDB_API_KEY="${WANDB_API_KEY:-}" # Kaggle: set bằng os.environ['WANDB_API_KEY'] trước khi chạy !bash run.sh
 
 RESUME_PATH="${RESUME_PATH:-}"
 echo "Starting training pipeline..."
@@ -17,7 +18,8 @@ python -m src.main \
     --wandb \
     --wandb_project "${WANDB_PROJECT}" \
     --wandb_entity "${WANDB_ENTITY}" \
-    --wandb_run_name "${WANDB_RUN_NAME}" \
+    --wandb_run_name "${WANDB_NAME}" \
+    ${WANDB_API_KEY:+--wandb_api_key "$WANDB_API_KEY"} \
     ${RESUME_PATH:+--resume "$RESUME_PATH"}
 
 # ==========================================

@@ -1,0 +1,13 @@
+# Paths for Kaggle Environment
+# Lưu ý: Thay 'YOUR_DATASET_NAME' bằng tên thư mục dataset thực tế của bạn trên Kaggle
+DATA_DIR: '/kaggle/input/datasets/nadkli/data-agriculture/dataset' 
+CHECKPOINT_DIR: '/kaggle/working/checkpoints' # /kaggle/working là thư mục duy nhất cho phép ghi file
+
+# Đường dẫn dữ liệu hình ảnh (Read-only từ dataset)
+TRAIN_DIR: '/kaggle/input/datasets/nadkli/data-agriculture/dataset/train' 
+TEST_DIR: '/kaggle/input/datasets/nadkli/data-agriculture/dataset/test' 
+TRAIN_RGB_DIR: '/kaggle/input/datasets/nadkli/data-agriculture/dataset/train/RGB' 
+TEST_RGB_DIR: '/kaggle/input/datasets/nadkli/data-agriculture/dataset/test/RGB' 
+
+# Thư mục gốc để lưu file submission.csv
+ROOT_DIR: '/kaggle/working' 

@@ -6,7 +6,7 @@ def parse_args():
         "--configs", 
         nargs='+', 
         default=[
-            "src/configs/paths.yaml", 
+            "src/configs/paths_kaggle.yaml", 
             "src/configs/model.yaml", 
             "src/configs/train.yaml", 
             "src/configs/dataset.yaml"
@@ -35,6 +35,12 @@ def parse_args():
         type=str, 
         default=None, 
         help="Wandb entity (username or team name)"
+    )
+    parser.add_argument(
+        "--wandb_api_key",
+        type=str,
+        default=None,
+        help="Wandb API Key for login"
     )
     parser.add_argument(
         "--resume",
