@@ -9,7 +9,7 @@ import numpy as np
 
 from src.modules.utils import load_config, set_seed, get_filename_crossplatform
 from src.modules.dataset import RGBDataset, RGBTestDataset, get_transforms
-from src.models.model import ResNet18Model
+from src.models.model import build_model
 from src.modules.trainer import Trainer
 from src.modules.evaluate import Evaluator
 from src.modules.inference import Inferencer
@@ -19,6 +19,14 @@ def main():
     
     # Load config from YAMLs
     cfg = load_config(args.configs)
+    
+    # Automatically override paths if --data_dir is provided
+    if hasattr(args, 'data_dir') and args.data_dir:
+        cfg.DATA_DIR = args.data_dir
+        cfg.TRAIN_DIR = os.path.join(cfg.DATA_DIR, 'train')
+        cfg.TEST_DIR = os.path.join(cfg.DATA_DIR, 'test')
+        cfg.TRAIN_RGB_DIR = os.path.join(cfg.TRAIN_DIR, 'RGB')
+        cfg.TEST_RGB_DIR = os.path.join(cfg.TEST_DIR, 'RGB')
     
     if args.wandb:
         import wandb
@@ -58,8 +66,7 @@ def main():
     print(f"Train samples: {len(train_ds)}, Val samples: {len(val_ds)}, Test samples: {len(test_ds)}")
     
     # 3. Model Definition
-    model = ResNet18Model(num_classes=cfg.NUM_CLASSES, pretrained=True)
-    model = model.to(device)
+    model = build_model(cfg=cfg, device=device, pretrained=True, dropout_p=0.3)
     
     # 4. Training Setup
     criterion = nn.CrossEntropyLoss()

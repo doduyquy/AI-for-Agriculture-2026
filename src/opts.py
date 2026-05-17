@@ -42,5 +42,11 @@ def parse_args():
         default=None,
         help="Path to checkpoint to resume training from"
     )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=None,
+        help="Override base data directory (automatically updates train/test paths)"
+    )
     args = parser.parse_args()
     return args
