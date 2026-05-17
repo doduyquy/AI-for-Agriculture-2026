@@ -18,3 +18,5 @@ wandb/
 
 *.pt1
 misc/
+
+eda/
