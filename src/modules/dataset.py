@@ -1,156 +1,162 @@
 import os
+import random
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 
 from src.modules.utils import label_from_filename
 
-
-def _is_imagefolder_structure(img_dir: str) -> bool:
-    """Check if img_dir uses ImageFolder structure (class subfolders contain images)."""
-    entries = os.listdir(img_dir)
-    for entry in entries:
-        entry_path = os.path.join(img_dir, entry)
-        if os.path.isdir(entry_path):
-            # If there's at least one subfolder, treat as ImageFolder
-            return True
-    return False
-
-
-def _load_imagefolder(img_dir: str):
-    """
-    Load (relative_path, class_name) pairs from an ImageFolder-style directory:
-    img_dir/
-        ClassName1/
-            img1.png
-        ClassName2/
-            img2.png
-    Returns:
-        files: list of relative paths (e.g. 'ClassName1/img1.png')
-        labels: list of class name strings
-    """
-    files, labels = [], []
-    class_names = sorted([
-        d for d in os.listdir(img_dir)
-        if os.path.isdir(os.path.join(img_dir, d))
-    ])
-    for cls in class_names:
-        cls_dir = os.path.join(img_dir, cls)
-        for fname in sorted(os.listdir(cls_dir)):
-            if fname.lower().endswith((".png", ".jpg", ".jpeg")):
-                files.append(os.path.join(cls, fname))  # relative to img_dir
-                labels.append(cls)
-    return files, labels
+# ---------------------------------------------------------------------------
+# Dataset structure (thực tế trên Kaggle):
+#
+#   train/RGB/
+#       Health_hyper_1.png        ← label = "Health" (token đầu trước "_")
+#       Rust_hyper_184.png        ← label = "Rust"
+#       Other_hyper_5.png         ← label = "Other"
+#       ...                       (600 files, có label trong tên)
+#
+#   val/RGB/
+#       val_000a83c1.png          ← KHÔNG có label (competition submission set)
+#       val_00a704b1.png
+#       ...                       (300 files, chỉ dùng để predict & submit)
+#
+# Vì vậy:
+#   - Validation trong quá trình train → split từ train set (20%)
+#   - Submission inference           → dùng val/RGB/ với RGBTestDataset
+# ---------------------------------------------------------------------------
 
 
 class RGBDataset(Dataset):
     """
-    RGB Image Dataset.
+    Labeled RGB dataset — train/RGB/ với tên file dạng 'ClassName_hyper_N.png'.
 
-    Supports two directory structures automatically:
-    1. Flat files with label-encoded filenames: 'ClassName_xxx.png'
-       Example: Rust_hyper_184.png  →  label = 'Rust'
-    2. ImageFolder structure (class subfolders):
-       img_dir/ClassName1/img1.png, img_dir/ClassName2/img2.png
+    Label được lấy từ token đầu tiên trước dấu '_'.
+    Hỗ trợ truyền file_list để dùng subset (ví dụ train split / val split).
 
     Args:
-        img_dir: Root image directory.
-        transform: Optional torchvision transform.
-        file_list: Optional explicit list of filenames (flat mode only).
-        class_to_idx: Optional pre-built label→index mapping (from train set).
+        img_dir:       Thư mục chứa ảnh (train/RGB/).
+        transform:     Torchvision transform.
+        file_list:     Danh sách filename cụ thể (để dùng subset). Nếu None → load toàn bộ.
+        class_to_idx:  Mapping label→index từ train set. Nếu None → tự xây dựng.
     """
 
     def __init__(self, img_dir, transform=None, file_list=None, class_to_idx=None):
-        self.img_dir = img_dir
+        self.img_dir   = img_dir
         self.transform = transform
 
-        # ── Auto-detect structure ──────────────────────────────────────────
+        # ── Collect files ────────────────────────────────────────────────────
         if file_list is not None:
-            # Explicit file list → always flat mode
             self.files = file_list
-            raw_labels = [label_from_filename(f) for f in self.files]
-        elif _is_imagefolder_structure(img_dir):
-            # ImageFolder structure
-            self.files, raw_labels = _load_imagefolder(img_dir)
         else:
-            # Flat files, label from filename convention
             self.files = sorted([
-                f for f in os.listdir(img_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))
+                f for f in os.listdir(img_dir)
+                if f.lower().endswith((".png", ".jpg", ".jpeg"))
             ])
-            raw_labels = [label_from_filename(f) for f in self.files]
 
-        # ── Build / reuse class_to_idx ─────────────────────────────────────
+        # ── Build / reuse class_to_idx ───────────────────────────────────────
+        raw_labels = [label_from_filename(f) for f in self.files]
+
         if class_to_idx is not None:
             self.class_to_idx = class_to_idx
-            # Validate that all labels in this split exist in the provided mapping
-            unknown = set(raw_labels) - set(self.class_to_idx.keys())
-            if unknown:
-                raise ValueError(
-                    f"[RGBDataset] Found labels in '{img_dir}' that are NOT in "
-                    f"class_to_idx: {unknown}.\n"
-                    f"Known classes: {list(self.class_to_idx.keys())}\n"
-                    f"Hint: Check that the val/test directory follows the same "
-                    f"naming convention as train."
-                )
         else:
             unique_labels = sorted(set(raw_labels))
             self.class_to_idx = {c: i for i, c in enumerate(unique_labels)}
 
         self.idx_to_class = {i: c for c, i in self.class_to_idx.items()}
+
+        # Validate — mọi label trong split này phải nằm trong class_to_idx
+        unknown = set(raw_labels) - set(self.class_to_idx.keys())
+        if unknown:
+            raise ValueError(
+                f"[RGBDataset] Phát hiện label không hợp lệ trong '{img_dir}': {unknown}\n"
+                f"Known classes: {list(self.class_to_idx.keys())}\n"
+                f"Kiểm tra tên file: phải có dạng 'ClassName_<anything>.png'."
+            )
+
         self.y = [self.class_to_idx[lbl] for lbl in raw_labels]
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
-        fname = self.files[idx]
-        label = self.y[idx]
-
-        img_path = os.path.join(self.img_dir, fname)
-        img = Image.open(img_path).convert("RGB")
-
+        fname  = self.files[idx]
+        label  = self.y[idx]
+        img    = Image.open(os.path.join(self.img_dir, fname)).convert("RGB")
         if self.transform:
             img = self.transform(img)
-
         return img, label
 
 
 class RGBTestDataset(Dataset):
     """
-    RGB Test Dataset — returns (image, filename) without label.
-    Supports both flat-file and ImageFolder directory structures.
+    Unlabeled RGB dataset — val/RGB/ với tên file dạng 'val_<hash>.png'.
+    Trả về (image, filename) để dùng cho inference và tạo submission.
+
+    Args:
+        img_dir:   Thư mục chứa ảnh (val/RGB/).
+        transform: Torchvision transform.
     """
 
     def __init__(self, img_dir, transform=None):
-        self.img_dir = img_dir
+        self.img_dir   = img_dir
         self.transform = transform
-
-        if _is_imagefolder_structure(img_dir):
-            # Gather all images across subfolders; ignore subfolder name (no label needed)
-            self.files = []
-            for subdir in sorted(os.listdir(img_dir)):
-                subdir_path = os.path.join(img_dir, subdir)
-                if os.path.isdir(subdir_path):
-                    for fname in sorted(os.listdir(subdir_path)):
-                        if fname.lower().endswith((".png", ".jpg", ".jpeg")):
-                            self.files.append(os.path.join(subdir, fname))
-        else:
-            self.files = sorted([
-                f for f in os.listdir(img_dir) if f.lower().endswith((".png", ".jpg", ".jpeg"))
-            ])
+        self.files     = sorted([
+            f for f in os.listdir(img_dir)
+            if f.lower().endswith((".png", ".jpg", ".jpeg"))
+        ])
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
         fname = self.files[idx]
-        img_path = os.path.join(self.img_dir, fname)
-        img = Image.open(img_path).convert("RGB")
-
+        img   = Image.open(os.path.join(self.img_dir, fname)).convert("RGB")
         if self.transform:
             img = self.transform(img)
-
         return img, fname
+
+
+def split_dataset(img_dir, val_split=0.2, seed=42):
+    """
+    Chia file list trong img_dir thành (train_files, val_files) theo tỉ lệ.
+
+    Đảm bảo stratified: mỗi class được chia theo tỉ lệ val_split.
+    Trả về 2 list filename (chưa load ảnh) và class_to_idx.
+
+    Args:
+        img_dir:   Thư mục chứa ảnh dạng 'ClassName_xxx.png'.
+        val_split: Tỉ lệ validation (mặc định 0.2 = 20%).
+        seed:      Random seed.
+
+    Returns:
+        train_files, val_files, class_to_idx
+    """
+    rng = random.Random(seed)
+
+    all_files = sorted([
+        f for f in os.listdir(img_dir)
+        if f.lower().endswith((".png", ".jpg", ".jpeg"))
+    ])
+
+    # Group by class
+    class_files: dict[str, list] = {}
+    for f in all_files:
+        cls = label_from_filename(f)
+        class_files.setdefault(cls, []).append(f)
+
+    train_files, val_files = [], []
+    for cls, files in sorted(class_files.items()):
+        shuffled = files[:]
+        rng.shuffle(shuffled)
+        n_val = max(1, int(len(shuffled) * val_split))
+        val_files.extend(shuffled[:n_val])
+        train_files.extend(shuffled[n_val:])
+
+    # Build class_to_idx từ toàn bộ tập (không chỉ train)
+    all_labels = sorted(class_files.keys())
+    class_to_idx = {c: i for i, c in enumerate(all_labels)}
+
+    return train_files, val_files, class_to_idx
 
 
 def get_transforms(cfg):
