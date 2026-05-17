@@ -68,7 +68,7 @@ def main():
     
     # Create datasets – dùng đúng cấu trúc train/val gốc từ Kaggle
     train_ds = RGBDataset(cfg.TRAIN_RGB_DIR, transform=tfm_train)  # 100% train
-    val_ds   = RGBDataset(cfg.VAL_RGB_DIR,   transform=tfm_val)    # val gốc Kaggle
+    val_ds   = RGBDataset(cfg.VAL_RGB_DIR,   transform=tfm_val, class_to_idx=train_ds.class_to_idx)    # val gốc Kaggle
     test_ds  = RGBTestDataset(cfg.TEST_RGB_DIR, transform=tfm_val)
     
     # Create dataloaders
@@ -105,12 +105,12 @@ def main():
     history = trainer.train(resume_path=args.resume)
     
     # 6. Evaluation
-    class_names = [val_ds.idx_to_class[i] for i in range(cfg.NUM_CLASSES)]
+    class_names = [train_ds.idx_to_class[i] for i in range(cfg.NUM_CLASSES)]
     evaluator = Evaluator(model, val_loader, device, class_names)
     y_true, y_pred, report_dict = evaluator.evaluate(model_path=save_path)
     
     # 7. Inference
-    inferencer = Inferencer(model, test_loader, device, val_ds.idx_to_class)
+    inferencer = Inferencer(model, test_loader, device, train_ds.idx_to_class)
     submission_path = os.path.join(cfg.ROOT_DIR, "submission.csv")
     inferencer.predict(model_path=save_path, output_csv=submission_path)
     
@@ -136,9 +136,16 @@ def main():
         wandb.log_artifact(artifact)
         
         # Save best model checkpoint to wandb
-        model_artifact = wandb.Artifact('best-model', type='model')
-        model_artifact.add_file(save_path)
-        wandb.log_artifact(model_artifact)
+        best_model_artifact = wandb.Artifact('best-model', type='model')
+        best_model_artifact.add_file(save_path)
+        wandb.log_artifact(best_model_artifact)
+        
+        # Save last model checkpoint to wandb
+        last_save_path = save_path.replace('.pth', '_last.pth')
+        if os.path.exists(last_save_path):
+            last_model_artifact = wandb.Artifact('latest-model', type='model')
+            last_model_artifact.add_file(last_save_path)
+            wandb.log_artifact(last_model_artifact)
         
         wandb.finish()
 

@@ -8,7 +8,7 @@ from src.modules.utils import label_from_filename
 class RGBDataset(Dataset):
     """RGB Image Dataset - loads PNG images with labels from filename"""
     
-    def __init__(self, img_dir, transform=None, file_list=None):
+    def __init__(self, img_dir, transform=None, file_list=None, class_to_idx=None):
         self.img_dir = img_dir
         self.transform = transform
         
@@ -18,8 +18,12 @@ class RGBDataset(Dataset):
             self.files = sorted([f for f in os.listdir(img_dir) if f.lower().endswith(".png")])
         
         # Create label mapping
-        labels = sorted({label_from_filename(f) for f in self.files})
-        self.class_to_idx = {c: i for i, c in enumerate(labels)}
+        if class_to_idx is not None:
+            self.class_to_idx = class_to_idx
+        else:
+            labels = sorted({label_from_filename(f) for f in self.files})
+            self.class_to_idx = {c: i for i, c in enumerate(labels)}
+            
         self.idx_to_class = {i: c for c, i in self.class_to_idx.items()}
         self.y = [self.class_to_idx[label_from_filename(f)] for f in self.files]
     
