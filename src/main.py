@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 
 from src.modules.utils import load_config, set_seed, get_filename_crossplatform
-from src.modules.dataset import MultimodalDataset, RGBTestDataset, get_transforms, split_dataset
+from src.modules.dataset import MultimodalDataset, MultimodalTestDataset, get_transforms, split_dataset
 from src.models.model import build_multimodal_model
 from src.modules.trainer import Trainer
 from src.modules.evaluate import Evaluator
@@ -28,17 +28,25 @@ def main():
     
     # Automatically override paths if --data_dir is provided
     if hasattr(args, 'data_dir') and args.data_dir:
-        cfg.DATA_DIR     = args.data_dir
-        cfg.TRAIN_DIR    = os.path.join(cfg.DATA_DIR, 'train')
+        cfg.DATA_DIR      = args.data_dir
+        cfg.TRAIN_DIR     = os.path.join(cfg.DATA_DIR, 'train')
         cfg.TRAIN_RGB_DIR = os.path.join(cfg.TRAIN_DIR, 'RGB')
+        cfg.TRAIN_HS_DIR  = os.path.join(cfg.TRAIN_DIR, 'HS')
+        cfg.TRAIN_MS_DIR  = os.path.join(cfg.TRAIN_DIR, 'MS')
 
         val_path  = os.path.join(cfg.DATA_DIR, 'val')
         test_path = os.path.join(cfg.DATA_DIR, 'test')
         if os.path.exists(val_path):
             cfg.VAL_RGB_DIR  = os.path.join(val_path, 'RGB')
+            cfg.VAL_HS_DIR   = os.path.join(val_path, 'HS')
+            cfg.VAL_MS_DIR   = os.path.join(val_path, 'MS')
             cfg.TEST_RGB_DIR = cfg.VAL_RGB_DIR   # submission set
+            cfg.TEST_HS_DIR  = cfg.VAL_HS_DIR
+            cfg.TEST_MS_DIR  = cfg.VAL_MS_DIR
         if os.path.exists(test_path):
             cfg.TEST_RGB_DIR = os.path.join(test_path, 'RGB')
+            cfg.TEST_HS_DIR  = os.path.join(test_path, 'HS')
+            cfg.TEST_MS_DIR  = os.path.join(test_path, 'MS')
     
     if args.wandb:
         import wandb
@@ -85,9 +93,11 @@ def main():
     val_ds   = MultimodalDataset(train_hs, train_ms, train_rgb, transform=tfm_val,
                                  file_list=val_files,   class_to_idx=class_to_idx)
 
-    # 2.2 Submission test set (val/RGB/ — không có label)
-    if test_rgb:
-        test_ds = RGBTestDataset(test_rgb, transform=tfm_val)
+    # 2.2 Submission test set (val/{RGB,HS,MS}/ — đủ cả 3 modality, không có label)
+    if test_rgb and os.path.exists(test_rgb):
+        test_hs = getattr(cfg, 'TEST_HS_DIR', test_rgb.replace('RGB', 'HS'))
+        test_ms = getattr(cfg, 'TEST_MS_DIR', test_rgb.replace('RGB', 'MS'))
+        test_ds = MultimodalTestDataset(test_hs, test_ms, test_rgb, transform=tfm_val)
     else:
         print("[WARN] TEST_RGB_DIR chưa được cấu hình → bỏ qua bước inference.")
         test_ds = None
@@ -138,7 +148,7 @@ def main():
 
     # 7. Inference (trên submission test set — val/RGB/)
     if test_loader is not None:
-        inferencer = Inferencer(model, test_loader, device, train_ds.idx_to_class)
+        inferencer = Inferencer(model, test_loader, device, train_ds.idx_to_class, is_multimodal=True)
         submission_path = os.path.join(cfg.ROOT_DIR, "submission.csv")
         inferencer.predict(model_path=save_path, output_csv=submission_path)
     else:

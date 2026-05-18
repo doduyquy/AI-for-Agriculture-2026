@@ -11,20 +11,18 @@ from src.modules.utils import label_from_filename
 # ---------------------------------------------------------------------------
 # Dataset structure (thực tế trên Kaggle):
 #
-#   train/RGB/
-#       Health_hyper_1.png        ← label = "Health" (token đầu trước "_")
-#       Rust_hyper_184.png        ← label = "Rust"
-#       Other_hyper_5.png         ← label = "Other"
-#       ...                       (600 files, có label trong tên)
+#   train/RGB/        train/HS/        train/MS/
+#       Health_hyper_1.png / .npy / .npy  ← label = "Health"
+#       Rust_hyper_184.png               ← label = "Rust"
+#       ...                              (600 files, có label trong tên)
 #
-#   val/RGB/
-#       val_000a83c1.png          ← KHÔNG có label (competition submission set)
-#       val_00a704b1.png
-#       ...                       (300 files, chỉ dùng để predict & submit)
+#   val/RGB/          val/HS/          val/MS/
+#       val_000a83c1.png / .npy / .npy   ← KHÔNG có label (submission set)
+#       ...                              (300 files, đủ cả 3 modality)
 #
 # Vì vậy:
-#   - Validation trong quá trình train → split từ train set (20%)
-#   - Submission inference           → dùng val/RGB/ với RGBTestDataset
+#   - Validation trong quá trình train   → split từ train set (20%)
+#   - Submission inference               → dùng val/{RGB,HS,MS}/ với MultimodalTestDataset
 # ---------------------------------------------------------------------------
 
 
@@ -91,8 +89,8 @@ class RGBDataset(Dataset):
 
 class RGBTestDataset(Dataset):
     """
-    Unlabeled RGB dataset — val/RGB/ với tên file dạng 'val_<hash>.png'.
-    Trả về (image, filename) để dùng cho inference và tạo submission.
+    Unlabeled RGB-only dataset — val/RGB/ với tên file dạng 'val_<hash>.png'.
+    Trả về (image, filename). Dùng khi chỉ cần infer bằng RGB branch.
 
     Args:
         img_dir:   Thư mục chứa ảnh (val/RGB/).
@@ -116,6 +114,81 @@ class RGBTestDataset(Dataset):
         if self.transform:
             img = self.transform(img)
         return img, fname
+
+
+class MultimodalTestDataset(Dataset):
+    """
+    Unlabeled Multimodal dataset — val/{RGB,HS,MS}/ (submission set).
+    Cấu trúc giống MultimodalDataset nhưng trả về (hs, ms, rgb, filename)
+    thay vì (hs, ms, rgb, label) vì tập val không có nhãn.
+
+    Args:
+        hs_dir:    Thư mục chứa dữ liệu HS (.npy).
+        ms_dir:    Thư mục chứa dữ liệu MS (.npy hoặc .tif).
+        rgb_dir:   Thư mục chứa ảnh RGB (.png/.jpg).
+        transform: Torchvision transform (áp dụng cho RGB).
+    """
+
+    def __init__(self, hs_dir, ms_dir, rgb_dir, transform=None):
+        self.hs_dir    = hs_dir
+        self.ms_dir    = ms_dir
+        self.rgb_dir   = rgb_dir
+        self.transform = transform
+
+        # Dùng rgb_dir làm nguồn chính để lấy danh sách file
+        self.files = sorted([
+            f for f in os.listdir(rgb_dir)
+            if f.lower().endswith((".png", ".jpg", ".jpeg"))
+        ])
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        fname     = self.files[idx]
+        base_name = os.path.splitext(fname)[0]
+
+        # 1. Load RGB (3 channels)
+        rgb_path = os.path.join(self.rgb_dir, fname)
+        if not os.path.exists(rgb_path):
+            rgb_path = os.path.join(self.rgb_dir, base_name + '.png')
+        try:
+            rgb_img = Image.open(rgb_path).convert("RGB")
+            if self.transform:
+                rgb_img = self.transform(rgb_img)
+            else:
+                rgb_img = transforms.ToTensor()(rgb_img)
+        except Exception:
+            rgb_img = torch.zeros((3, 64, 64), dtype=torch.float32)
+
+        # 2. Load HS (125 channels, 32x32)
+        hs_path = os.path.join(self.hs_dir, base_name + '.npy')
+        if os.path.exists(hs_path):
+            hs_data = np.load(hs_path)
+            if len(hs_data.shape) == 3 and hs_data.shape[-1] == 125:
+                hs_data = hs_data.transpose(2, 0, 1)
+            hs_tensor = torch.tensor(hs_data, dtype=torch.float32)
+        else:
+            hs_tensor = torch.zeros((125, 32, 32), dtype=torch.float32)
+
+        # 3. Load MS (5 channels, 64x64)
+        ms_path_npy = os.path.join(self.ms_dir, base_name + '.npy')
+        ms_path_tif = os.path.join(self.ms_dir, base_name + '.tif')
+        if os.path.exists(ms_path_npy):
+            ms_data = np.load(ms_path_npy)
+            if len(ms_data.shape) == 3 and ms_data.shape[-1] == 5:
+                ms_data = ms_data.transpose(2, 0, 1)
+            ms_tensor = torch.tensor(ms_data, dtype=torch.float32)
+        elif os.path.exists(ms_path_tif):
+            try:
+                ms_img = Image.open(ms_path_tif)
+                ms_tensor = transforms.ToTensor()(ms_img)
+            except Exception:
+                ms_tensor = torch.zeros((5, 64, 64), dtype=torch.float32)
+        else:
+            ms_tensor = torch.zeros((5, 64, 64), dtype=torch.float32)
+
+        return hs_tensor, ms_tensor, rgb_img, fname
 
 
 def split_dataset(img_dir, val_split=0.2, seed=42):
