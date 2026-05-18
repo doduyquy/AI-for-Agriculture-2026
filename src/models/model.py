@@ -6,6 +6,7 @@ Hierarchy:
     BaseClassifier        (ABC)
     └── ResNetClassifier  – pretrained ResNet với custom FC
         └── ResNet18Classifier  – cụ thể cho ResNet-18
+    MultimodalClassifier  – Late Fusion: RGB (ResNet18) + MS (CNN) + HS (CNN)
 """
 
 from abc import ABC, abstractmethod
@@ -142,7 +143,7 @@ def build_model(
     dropout_p:  float = 0.0,
 ) -> ResNetClassifier:
     """
-    Tạo model từ ConfigDict và đưa lên device.
+    Tạo model ResNet (single-modality RGB) từ ConfigDict và đưa lên device.
 
     Returns:
         model đã .to(device)
@@ -152,6 +153,250 @@ def build_model(
         model_name=cfg.MODEL_NAME,
         pretrained=pretrained,
         dropout_p=dropout_p,
+    ).to(device)
+
+    model.summary()
+    return model
+
+
+# ──────────────────────────────────────────────
+# MS Branch: CNN nhỏ cho 5 kênh đầu vào
+# ──────────────────────────────────────────────
+class MSBranch(nn.Module):
+    """
+    Lightweight CNN cho ảnh Multispectral (5 channels, 64x64).
+    Output: feature vector 256 chiều.
+    """
+
+    def __init__(self, out_features: int = 256, dropout_p: float = 0.3):
+        super().__init__()
+        self.net = nn.Sequential(
+            # Block 1: 5 → 32 channels, 64x64 → 32x32
+            nn.Conv2d(5, 32, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            # Block 2: 32 → 64 channels, 32x32 → 16x16
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            # Block 3: 64 → 128 channels, 16x16 → 8x8
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            # Block 4: 128 → 256 channels, 8x8 → 4x4
+            nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),   # → (256, 1, 1)
+        )
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(256, out_features),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head(self.net(x))
+
+
+# ──────────────────────────────────────────────
+# HS Branch: CNN cho 125 kênh đầu vào (32x32)
+# ──────────────────────────────────────────────
+class HSBranch(nn.Module):
+    """
+    CNN cho ảnh Hyperspectral (125 channels, 32x32).
+    Dùng Conv2d với in_channels=125; pooling aggressively vì spatial nhỏ.
+    Output: feature vector 256 chiều.
+    """
+
+    def __init__(self, out_features: int = 256, dropout_p: float = 0.3):
+        super().__init__()
+        self.net = nn.Sequential(
+            # Block 1: 125 → 256 channels, 32x32 → 16x16
+            # Dùng kernel 1x1 trước để giảm kênh (spectral mixing)
+            nn.Conv2d(125, 256, kernel_size=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+
+            # Block 2: 256 → 256, spatial 32x32 → 16x16
+            nn.Conv2d(256, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            # Block 3: 256 → 256, 16x16 → 8x8
+            nn.Conv2d(256, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            # Global average pool → (256, 1, 1)
+            nn.AdaptiveAvgPool2d(1),
+        )
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(256, out_features),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head(self.net(x))
+
+
+# ──────────────────────────────────────────────
+# MultimodalClassifier – Late Fusion
+# ──────────────────────────────────────────────
+class MultimodalClassifier(nn.Module):
+    """
+    Late Fusion model cho 3 modality: RGB, MS, HS.
+
+    Architecture:
+        RGB Branch  → ResNet18 (pretrained, FC removed) → 512-d
+        MS Branch   → MSBranch (5 ch CNN)               → 256-d
+        HS Branch   → HSBranch (125 ch CNN)              → 256-d
+        Fusion Head → Concat(512+256+256=1024) → FC → num_classes
+
+    Args:
+        num_classes:     Số class phân loại.
+        rgb_pretrained:  Sử dụng pretrained weights cho RGB branch.
+        rgb_model:       Tên ResNet variant ('resnet18', 'resnet34', ...).
+        ms_out:          Output dim của MS branch (default 256).
+        hs_out:          Output dim của HS branch (default 256).
+        dropout_p:       Dropout probability ở Fusion Head & branches.
+        fusion_hidden:   Số neurons lớp ẩn trong Fusion Head (0 = bỏ qua).
+    """
+
+    SUPPORTED_RGB = {
+        "resnet18" : (models.resnet18,  models.ResNet18_Weights.IMAGENET1K_V1,  512),
+        "resnet34" : (models.resnet34,  models.ResNet34_Weights.IMAGENET1K_V1,  512),
+        "resnet50" : (models.resnet50,  models.ResNet50_Weights.IMAGENET1K_V1,  2048),
+        "resnet101": (models.resnet101, models.ResNet101_Weights.IMAGENET1K_V1, 2048),
+    }
+
+    def __init__(
+        self,
+        num_classes:    int,
+        rgb_pretrained: bool  = True,
+        rgb_model:      str   = "resnet18",
+        ms_out:         int   = 256,
+        hs_out:         int   = 256,
+        dropout_p:      float = 0.3,
+        fusion_hidden:  int   = 512,
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+
+        # ── RGB Branch (ResNet backbone, bỏ FC cuối) ──────────────────────────
+        if rgb_model not in self.SUPPORTED_RGB:
+            raise ValueError(
+                f"Unsupported rgb_model: '{rgb_model}'. "
+                f"Choose from: {list(self.SUPPORTED_RGB.keys())}"
+            )
+        model_fn, weights, rgb_feat = self.SUPPORTED_RGB[rgb_model]
+        _resnet = model_fn(weights=weights if rgb_pretrained else None)
+        # Bỏ lớp FC cuối → chỉ giữ feature extractor
+        self.rgb_branch = nn.Sequential(*list(_resnet.children())[:-1])  # → (B, rgb_feat, 1, 1)
+        self.rgb_flatten = nn.Flatten()
+
+        # ── MS & HS Branches ─────────────────────────────────────────────────
+        self.ms_branch = MSBranch(out_features=ms_out, dropout_p=dropout_p)
+        self.hs_branch = HSBranch(out_features=hs_out, dropout_p=dropout_p)
+
+        # ── Fusion Head ────────────────────────────────────────────────────────
+        fused_dim = rgb_feat + ms_out + hs_out   # 512 + 256 + 256 = 1024
+        if fusion_hidden > 0:
+            self.fusion_head = nn.Sequential(
+                nn.Dropout(p=dropout_p),
+                nn.Linear(fused_dim, fusion_hidden),
+                nn.ReLU(inplace=True),
+                nn.Dropout(p=dropout_p),
+                nn.Linear(fusion_hidden, num_classes),
+            )
+        else:
+            self.fusion_head = nn.Sequential(
+                nn.Dropout(p=dropout_p),
+                nn.Linear(fused_dim, num_classes),
+            )
+
+    def forward(
+        self,
+        hs:  torch.Tensor,   # (B, 125, 32, 32)
+        ms:  torch.Tensor,   # (B,   5, 64, 64)
+        rgb: torch.Tensor,   # (B,   3, H,  W)
+    ) -> torch.Tensor:       # (B, num_classes)
+        rgb_feat = self.rgb_flatten(self.rgb_branch(rgb))  # (B, 512)
+        ms_feat  = self.ms_branch(ms)                       # (B, 256)
+        hs_feat  = self.hs_branch(hs)                       # (B, 256)
+
+        fused = torch.cat([rgb_feat, ms_feat, hs_feat], dim=1)  # (B, 1024)
+        return self.fusion_head(fused)                           # (B, num_classes)
+
+    def count_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+    def summary(self):
+        total = self.count_parameters()
+        rgb_p  = sum(p.numel() for p in self.rgb_branch.parameters())
+        ms_p   = sum(p.numel() for p in self.ms_branch.parameters())
+        hs_p   = sum(p.numel() for p in self.hs_branch.parameters())
+        head_p = sum(p.numel() for p in self.fusion_head.parameters())
+        print("[MultimodalClassifier]")
+        print(f"  num_classes   : {self.num_classes}")
+        print(f"  total params  : {total:,}")
+        print(f"    rgb_branch  : {rgb_p:,}")
+        print(f"    ms_branch   : {ms_p:,}")
+        print(f"    hs_branch   : {hs_p:,}")
+        print(f"    fusion_head : {head_p:,}")
+        print(f"  device        : {next(self.parameters()).device}")
+
+    def freeze_rgb_branch(self):
+        """Đóng băng RGB branch để chỉ fine-tune MS, HS và Fusion Head."""
+        for param in self.rgb_branch.parameters():
+            param.requires_grad = False
+        print("[MultimodalClassifier] RGB branch frozen.")
+
+    def unfreeze_all(self):
+        """Mở đóng băng toàn bộ tham số."""
+        for param in self.parameters():
+            param.requires_grad = True
+        print("[MultimodalClassifier] All parameters unfrozen.")
+
+
+def build_multimodal_model(
+    cfg:    Any,
+    device: torch.device,
+) -> MultimodalClassifier:
+    """
+    Tạo MultimodalClassifier từ ConfigDict và đưa lên device.
+
+    Các keys dùng trong cfg (có default an toàn):
+        NUM_CLASSES       (bắt buộc)
+        MODEL_NAME        → rgb_model (default 'resnet18')
+        RGB_PRETRAINED    → rgb_pretrained (default True)
+        MS_OUT_FEATURES   → ms_out (default 256)
+        HS_OUT_FEATURES   → hs_out (default 256)
+        DROPOUT_P         → dropout_p (default 0.3)
+        FUSION_HIDDEN     → fusion_hidden (default 512)
+
+    Returns:
+        model đã .to(device)
+    """
+    model = MultimodalClassifier(
+        num_classes    = cfg.NUM_CLASSES,
+        rgb_pretrained = getattr(cfg, 'RGB_PRETRAINED',  True),
+        rgb_model      = getattr(cfg, 'MODEL_NAME',      'resnet18'),
+        ms_out         = getattr(cfg, 'MS_OUT_FEATURES', 256),
+        hs_out         = getattr(cfg, 'HS_OUT_FEATURES', 256),
+        dropout_p      = getattr(cfg, 'DROPOUT_P',       0.3),
+        fusion_hidden  = getattr(cfg, 'FUSION_HIDDEN',   512),
     ).to(device)
 
     model.summary()

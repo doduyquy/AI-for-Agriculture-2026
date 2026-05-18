@@ -1,5 +1,7 @@
 import os
 import random
+import numpy as np
+import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
@@ -178,3 +180,110 @@ def get_transforms(cfg):
     ])
 
     return tfm_train, tfm_val
+
+
+class MultimodalDataset(Dataset):
+    """
+    Multimodal Dataset cho ảnh Hyperspectral (HS), Multispectral (MS) và RGB.
+    
+    Theo cấu trúc dự kiến:
+    - HS:  125 kênh, size 32x32
+    - MS:  5 kênh, size 64x64
+    - RGB: 3 kênh, size 64x64
+    
+    Args:
+        hs_dir:        Thư mục chứa ảnh HS.
+        ms_dir:        Thư mục chứa ảnh MS.
+        rgb_dir:       Thư mục chứa ảnh RGB.
+        transform:     Torchvision transform (áp dụng cho RGB).
+        file_list:     Danh sách filename dùng làm cơ sở (base name). Nếu None → duyệt rgb_dir.
+        class_to_idx:  Mapping label→index.
+    """
+
+    def __init__(self, hs_dir, ms_dir, rgb_dir, transform=None, file_list=None, class_to_idx=None):
+        self.hs_dir = hs_dir
+        self.ms_dir = ms_dir
+        self.rgb_dir = rgb_dir
+        self.transform = transform
+
+        # ── Collect files ────────────────────────────────────────────────────
+        if file_list is not None:
+            self.files = file_list
+        else:
+            # Lấy rgb_dir làm gốc chuẩn cho danh sách file
+            self.files = sorted([
+                f for f in os.listdir(rgb_dir)
+                if f.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".npy"))
+            ])
+
+        # ── Build / reuse class_to_idx ───────────────────────────────────────
+        raw_labels = [label_from_filename(f) for f in self.files]
+
+        if class_to_idx is not None:
+            self.class_to_idx = class_to_idx
+        else:
+            unique_labels = sorted(set(raw_labels))
+            self.class_to_idx = {c: i for i, c in enumerate(unique_labels)}
+
+        self.idx_to_class = {i: c for c, i in self.class_to_idx.items()}
+
+        self.y = [self.class_to_idx[lbl] for lbl in raw_labels]
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        fname = self.files[idx]
+        label = self.y[idx]
+        base_name = os.path.splitext(fname)[0]
+
+        # 1. Load RGB (3 channels, 64x64)
+        rgb_path = os.path.join(self.rgb_dir, fname)
+        # Dự phòng trường hợp thư mục có file tên khác extension
+        if not os.path.exists(rgb_path):
+            rgb_path = os.path.join(self.rgb_dir, base_name + '.png')
+            
+        try:
+            rgb_img = Image.open(rgb_path).convert("RGB")
+            if self.transform:
+                rgb_img = self.transform(rgb_img)
+            else:
+                rgb_img = transforms.ToTensor()(rgb_img)
+        except Exception:
+            # Dummy tensor cho RGB nếu không đọc được
+            rgb_img = torch.zeros((3, 64, 64), dtype=torch.float32)
+
+        # 2. Load HS (125 channels, 32x32)
+        # Giả định dữ liệu HS được lưu dưới dạng .npy
+        hs_path = os.path.join(self.hs_dir, base_name + '.npy')
+        if os.path.exists(hs_path):
+            hs_data = np.load(hs_path)
+            # Chuyển (H, W, C) sang (C, H, W) nếu kênh nằm cuối
+            if len(hs_data.shape) == 3 and hs_data.shape[-1] == 125:
+                hs_data = hs_data.transpose(2, 0, 1)
+            hs_tensor = torch.tensor(hs_data, dtype=torch.float32)
+        else:
+            # Dummy tensor cho HS
+            hs_tensor = torch.zeros((125, 32, 32), dtype=torch.float32)
+
+        # 3. Load MS (5 channels, 64x64)
+        # Giả định MS được lưu dưới dạng .npy hoặc .tif
+        ms_path_npy = os.path.join(self.ms_dir, base_name + '.npy')
+        ms_path_tif = os.path.join(self.ms_dir, base_name + '.tif')
+        
+        if os.path.exists(ms_path_npy):
+            ms_data = np.load(ms_path_npy)
+            if len(ms_data.shape) == 3 and ms_data.shape[-1] == 5:
+                ms_data = ms_data.transpose(2, 0, 1)
+            ms_tensor = torch.tensor(ms_data, dtype=torch.float32)
+        elif os.path.exists(ms_path_tif):
+            try:
+                ms_img = Image.open(ms_path_tif)
+                ms_tensor = transforms.ToTensor()(ms_img)
+            except Exception:
+                ms_tensor = torch.zeros((5, 64, 64), dtype=torch.float32)
+        else:
+            # Dummy tensor cho MS
+            ms_tensor = torch.zeros((5, 64, 64), dtype=torch.float32)
+
+        return hs_tensor, ms_tensor, rgb_img, label

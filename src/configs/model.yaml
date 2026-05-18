@@ -1,3 +1,10 @@
 # Model hyperparameters
-NUM_CLASSES: 3 # Số lượng lớp (class) cần phân loại
-MODEL_NAME: "resnet18" # Tên kiến trúc mô hình sử dụng
+NUM_CLASSES: 3        # Số lượng lớp (class) cần phân loại
+MODEL_NAME: "resnet18" # Tên ResNet variant cho RGB branch (resnet18/34/50/101)
+
+# Multimodal (Late Fusion) hyperparameters
+RGB_PRETRAINED: true  # Dùng ImageNet pretrained weights cho RGB branch
+MS_OUT_FEATURES: 256  # Output feature dim của MS branch (5-channel CNN)
+HS_OUT_FEATURES: 256  # Output feature dim của HS branch (125-channel CNN)
+DROPOUT_P: 0.3        # Dropout probability dùng trong tất cả branches & fusion head
+FUSION_HIDDEN: 512    # Số neurons lớp ẩn trong Fusion Head (0 = bỏ lớp ẩn)
