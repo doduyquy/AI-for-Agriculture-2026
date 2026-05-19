@@ -1,4 +1,5 @@
 dataset/
+data_split/
 checkpoints/
 
 wandb/
@@ -20,3 +21,8 @@ wandb/
 misc/
 
 eda/
+*.png
+*.tif
+*.tiff
+*.csv
+tools/

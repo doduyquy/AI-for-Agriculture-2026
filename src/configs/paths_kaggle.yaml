@@ -1,13 +1,27 @@
 # Paths for Kaggle Environment
-# Lưu ý: Thay 'YOUR_DATASET_NAME' bằng tên thư mục dataset thực tế của bạn trên Kaggle
-DATA_DIR: '/kaggle/input/datasets/nadkli/data-agriculture/dataset' 
+DATA_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20'
 CHECKPOINT_DIR: '/kaggle/working/checkpoints' # /kaggle/working là thư mục duy nhất cho phép ghi file
 
 # Đường dẫn dữ liệu hình ảnh (Read-only từ dataset)
-TRAIN_DIR: '/kaggle/input/datasets/nadkli/data-agriculture/dataset/train' 
-VAL_DIR: '/kaggle/input/datasets/nadkli/data-agriculture/dataset/val' 
-TRAIN_RGB_DIR: '/kaggle/input/datasets/nadkli/data-agriculture/dataset/train/RGB' 
-VAL_RGB_DIR: '/kaggle/input/datasets/nadkli/data-agriculture/dataset/val/RGB' 
+TRAIN_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/train'
+VALIDATION_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/validation'
+VAL_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/val'
+
+TRAIN_RGB_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/train/RGB'
+TRAIN_HS_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/train/HS'
+TRAIN_MS_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/train/MS'
+
+VALIDATION_RGB_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/validation/RGB'
+VALIDATION_HS_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/validation/HS'
+VALIDATION_MS_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/validation/MS'
+
+# val/ là tập không nhãn để tạo submission.csv
+VAL_RGB_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/val/RGB'
+VAL_HS_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/val/HS'
+VAL_MS_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/val/MS'
+TEST_RGB_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/val/RGB'
+TEST_HS_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/val/HS'
+TEST_MS_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/val/MS'
 
 # Thư mục gốc để lưu file submission.csv
 ROOT_DIR: '/kaggle/working' 

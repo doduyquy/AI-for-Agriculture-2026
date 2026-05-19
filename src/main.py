@@ -7,12 +7,30 @@ from torch.utils.data import DataLoader
 import pandas as pd
 import numpy as np
 
-from src.modules.utils import load_config, set_seed, get_filename_crossplatform
-from src.modules.dataset import MultimodalDataset, MultimodalTestDataset, get_transforms, split_dataset
+from src.modules.utils import load_config, set_seed, get_filename_crossplatform, label_from_filename
+from src.modules.dataset import (
+    MultimodalDataset,
+    MultimodalTestDataset,
+    get_transforms,
+    load_split_manifest,
+    print_split_summary,
+    save_split_audit,
+    split_dataset,
+)
 from src.models.model import build_multimodal_model
 from src.modules.trainer import Trainer
 from src.modules.evaluate import Evaluator
 from src.modules.inference import Inferencer
+
+
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
+
+
+def list_image_files(img_dir):
+    return sorted([
+        f for f in os.listdir(img_dir)
+        if f.lower().endswith(IMAGE_EXTENSIONS)
+    ])
 
 def main():
     args = parse_args()
@@ -20,8 +38,8 @@ def main():
     # Load config from YAMLs
     cfg = load_config(args.configs)
 
-    # VAL_RGB_DIR là submission set (không có label) → dùng làm TEST_RGB_DIR
-    # Validation trong training → tự split từ TRAIN_RGB_DIR
+    # VAL_RGB_DIR là submission set (không có label) → dùng làm TEST_RGB_DIR.
+    # Nếu cần validation nội bộ thì bật VAL_SPLIT > 0 trong train.yaml.
     if not getattr(cfg, 'TEST_RGB_DIR', None):
         if getattr(cfg, 'VAL_RGB_DIR', None):
             cfg.TEST_RGB_DIR = cfg.VAL_RGB_DIR
@@ -34,7 +52,13 @@ def main():
         cfg.TRAIN_HS_DIR  = os.path.join(cfg.TRAIN_DIR, 'HS')
         cfg.TRAIN_MS_DIR  = os.path.join(cfg.TRAIN_DIR, 'MS')
 
-        val_path  = os.path.join(cfg.DATA_DIR, 'val')
+        validation_path = os.path.join(cfg.DATA_DIR, 'validation')
+        if os.path.exists(validation_path):
+            cfg.VALIDATION_RGB_DIR = os.path.join(validation_path, 'RGB')
+            cfg.VALIDATION_HS_DIR  = os.path.join(validation_path, 'HS')
+            cfg.VALIDATION_MS_DIR  = os.path.join(validation_path, 'MS')
+
+        val_path = os.path.join(cfg.DATA_DIR, 'val')
         test_path = os.path.join(cfg.DATA_DIR, 'test')
         if os.path.exists(val_path):
             cfg.VAL_RGB_DIR  = os.path.join(val_path, 'RGB')
@@ -47,6 +71,16 @@ def main():
             cfg.TEST_RGB_DIR = os.path.join(test_path, 'RGB')
             cfg.TEST_HS_DIR  = os.path.join(test_path, 'HS')
             cfg.TEST_MS_DIR  = os.path.join(test_path, 'MS')
+
+    if hasattr(args, 'submission_data_dir') and args.submission_data_dir:
+        submission_val_path = os.path.join(args.submission_data_dir, 'val')
+        if not os.path.exists(submission_val_path):
+            raise FileNotFoundError(
+                f"Không tìm thấy submission val dir: {submission_val_path}"
+            )
+        cfg.TEST_RGB_DIR = os.path.join(submission_val_path, 'RGB')
+        cfg.TEST_HS_DIR  = os.path.join(submission_val_path, 'HS')
+        cfg.TEST_MS_DIR  = os.path.join(submission_val_path, 'MS')
     
     if args.wandb:
         import wandb
@@ -78,20 +112,67 @@ def main():
     if test_rgb and not os.path.exists(test_rgb):
         raise FileNotFoundError(f"Không tìm thấy TEST_RGB_DIR: {test_rgb}")
 
-    # 2.1 Split train set → train / val nội bộ (stratified)
-    #     val/RGB/ không có label nên không dùng làm labeled val được.
+    # 2.1 Train labeled set.
+    #     validation/: dùng folder validation vật lý nếu DATA_DIR đã được tách sẵn.
+    #     SPLIT_MANIFEST_PATH: dùng split cố định đã tạo sẵn để công bằng giữa các lần thử.
+    #     VAL_SPLIT=0.2: tách 20% từ train/ nếu không có manifest.
+    #     VAL_SPLIT=0.0: dùng toàn bộ train/ cho final submit nếu không có manifest.
+    #     val/RGB/ của competition không có label nên chỉ dùng cho submission.
     val_split = getattr(cfg, 'VAL_SPLIT', 0.2)
-    train_files, val_files, class_to_idx = split_dataset(
-        train_rgb, val_split=val_split, seed=cfg.SEED
+    split_manifest_cfg = getattr(cfg, 'SPLIT_MANIFEST_PATH', None)
+    validation_rgb = getattr(cfg, 'VALIDATION_RGB_DIR', None)
+    use_physical_validation = validation_rgb and os.path.exists(validation_rgb)
+    if use_physical_validation:
+        train_files = list_image_files(train_rgb)
+        val_files = list_image_files(validation_rgb)
+        all_labels = sorted({
+            label_from_filename(f)
+            for f in train_files + val_files
+        })
+        class_to_idx = {c: i for i, c in enumerate(all_labels)}
+        print(f"[Split] Source        : physical folders ({cfg.TRAIN_DIR} + {os.path.dirname(validation_rgb)})")
+    elif split_manifest_cfg:
+        split_manifest_cfg = os.path.abspath(split_manifest_cfg)
+        if not os.path.exists(split_manifest_cfg):
+            raise FileNotFoundError(f"Không tìm thấy SPLIT_MANIFEST_PATH: {split_manifest_cfg}")
+        train_files, val_files, class_to_idx = load_split_manifest(
+            split_manifest_cfg, img_dir=train_rgb
+        )
+        print(f"[Split] Source        : fixed manifest ({split_manifest_cfg})")
+    else:
+        train_files, val_files, class_to_idx = split_dataset(
+            train_rgb, val_split=val_split, seed=cfg.SEED
+        )
+        print(f"[Split] Source        : generated by VAL_SPLIT={val_split} SEED={cfg.SEED}")
+    print_split_summary(train_files, val_files, class_to_idx)
+    split_audit_dir = getattr(cfg, 'ROOT_DIR', getattr(cfg, 'CHECKPOINT_DIR', '.'))
+    split_manifest_path, split_summary_path = save_split_audit(
+        split_audit_dir, train_files, val_files, class_to_idx
     )
+    print(f"[Split] Manifest saved : {split_manifest_path}")
+    print(f"[Split] Summary saved  : {split_summary_path}")
 
     train_hs = getattr(cfg, 'TRAIN_HS_DIR', os.path.join(cfg.TRAIN_DIR, 'HS') if hasattr(cfg, 'TRAIN_DIR') else train_rgb.replace('RGB', 'HS'))
     train_ms = getattr(cfg, 'TRAIN_MS_DIR', os.path.join(cfg.TRAIN_DIR, 'MS') if hasattr(cfg, 'TRAIN_DIR') else train_rgb.replace('RGB', 'MS'))
+    validation_hs = getattr(cfg, 'VALIDATION_HS_DIR', None)
+    validation_ms = getattr(cfg, 'VALIDATION_MS_DIR', None)
+    if use_physical_validation:
+        for name, path in {
+            "VALIDATION_HS_DIR": validation_hs,
+            "VALIDATION_MS_DIR": validation_ms,
+        }.items():
+            if not path or not os.path.exists(path):
+                raise FileNotFoundError(f"Không tìm thấy {name}: {path}")
 
     train_ds = MultimodalDataset(train_hs, train_ms, train_rgb, transform=tfm_train,
                                  file_list=train_files, class_to_idx=class_to_idx)
-    val_ds   = MultimodalDataset(train_hs, train_ms, train_rgb, transform=tfm_val,
-                                 file_list=val_files,   class_to_idx=class_to_idx)
+    val_ds = None
+    if val_files:
+        val_rgb_dir = validation_rgb if use_physical_validation else train_rgb
+        val_hs_dir = validation_hs if use_physical_validation else train_hs
+        val_ms_dir = validation_ms if use_physical_validation else train_ms
+        val_ds = MultimodalDataset(val_hs_dir, val_ms_dir, val_rgb_dir, transform=tfm_val,
+                                   file_list=val_files, class_to_idx=class_to_idx)
 
     # 2.2 Submission test set (val/{RGB,HS,MS}/ — đủ cả 3 modality, không có label)
     if test_rgb and os.path.exists(test_rgb):
@@ -104,13 +185,13 @@ def main():
 
     # Create dataloaders
     train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True,  num_workers=0)
-    val_loader   = DataLoader(val_ds,   batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=0)
+    val_loader   = DataLoader(val_ds,   batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=0) if val_ds else None
     test_loader  = DataLoader(test_ds,  batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=0) if test_ds else None
 
     print(f"[Data] TRAIN_RGB_DIR : {train_rgb}")
     print(f"[Data] TEST_RGB_DIR  : {test_rgb or '(không có)'}")
     print(f"[Data] Val split     : {val_split*100:.0f}%  |  "
-          f"train={len(train_ds)}  val={len(val_ds)}  "
+          f"train={len(train_ds)}  val={len(val_ds) if val_ds else 0}  "
           f"test={len(test_ds) if test_ds else 0}")
     print(f"[Data] Classes       : {class_to_idx}")
     
@@ -120,7 +201,9 @@ def main():
     # 4. Training Setup
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=cfg.LR)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
+    scheduler = None
+    if val_loader is not None:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
 
     save_name = f"multimodal_{cfg.MODEL_NAME}_imgsize{cfg.IMG_SIZE}_batch{cfg.BATCH_SIZE}_epoch{cfg.EPOCHS}_lr{cfg.LR}.pth"
     save_path = os.path.join(cfg.CHECKPOINT_DIR, save_name)
@@ -141,12 +224,16 @@ def main():
     
     history = trainer.train(resume_path=args.resume)
     
-    # 6. Evaluation (trên val split nội bộ)
+    # 6. Evaluation (chỉ chạy khi có val split nội bộ)
     class_names = [train_ds.idx_to_class[i] for i in range(len(class_to_idx))]
-    evaluator = Evaluator(model, val_loader, device, class_names, is_multimodal=True)
-    y_true, y_pred, report_dict = evaluator.evaluate(model_path=save_path)
+    y_true, y_pred, report_dict = None, None, {}
+    if val_loader is not None:
+        evaluator = Evaluator(model, val_loader, device, class_names, is_multimodal=True)
+        y_true, y_pred, report_dict = evaluator.evaluate(model_path=save_path)
+    else:
+        print("[INFO] Không có labeled validation split → bỏ qua classification report.")
 
-    # 7. Inference (trên submission test set — val/RGB/)
+    # 7. Inference (trên submission set — val/{RGB,HS,MS}/ không nhãn)
     if test_loader is not None:
         inferencer = Inferencer(model, test_loader, device, train_ds.idx_to_class, is_multimodal=True)
         submission_path = os.path.join(cfg.ROOT_DIR, "submission.csv")
@@ -166,16 +253,24 @@ def main():
             else:
                 wandb.summary[f"eval/{class_name}"] = metrics
                 
-        # Log confusion matrix
-        wandb.log({"conf_mat" : wandb.plot.confusion_matrix(probs=None,
-                        y_true=y_true, preds=y_pred,
-                        class_names=class_names)})
+        # Log confusion matrix only when an internal labeled val split exists.
+        if y_true is not None and y_pred is not None:
+            wandb.log({"conf_mat" : wandb.plot.confusion_matrix(probs=None,
+                            y_true=y_true, preds=y_pred,
+                            class_names=class_names)})
         
         # Save submission file as artifact
         if submission_path and os.path.exists(submission_path):
             artifact = wandb.Artifact('submission', type='dataset')
             artifact.add_file(submission_path)
             wandb.log_artifact(artifact)
+
+        # Save split audit files as artifacts.
+        split_artifact = wandb.Artifact('split-audit', type='dataset')
+        for path in (split_manifest_path, split_summary_path):
+            if os.path.exists(path):
+                split_artifact.add_file(path)
+        wandb.log_artifact(split_artifact)
         
         # Save best model checkpoint to wandb
         best_model_artifact = wandb.Artifact('best-model', type='model')

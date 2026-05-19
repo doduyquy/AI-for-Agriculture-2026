@@ -54,5 +54,11 @@ def parse_args():
         default=None,
         help="Override base data directory (automatically updates train/test paths)"
     )
+    parser.add_argument(
+        "--submission_data_dir",
+        type=str,
+        default=None,
+        help="Optional original competition data directory containing unlabeled val/ for submission"
+    )
     args = parser.parse_args()
     return args

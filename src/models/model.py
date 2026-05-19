@@ -14,7 +14,8 @@ from typing import Optional, Any
 
 import torch
 import torch.nn as nn
-import torchvision.models as models
+
+from src.models import get_rgb_backbone_spec
 
 # ──────────────────────────────────────────────
 # Abstract base
@@ -57,13 +58,6 @@ class ResNetClassifier(BaseClassifier):
     Thay thế FC cuối bằng Linear(in_features, num_classes).
     """
 
-    SUPPORTED = {
-        "resnet18" : (models.resnet18,  models.ResNet18_Weights.IMAGENET1K_V1),
-        "resnet34" : (models.resnet34,  models.ResNet34_Weights.IMAGENET1K_V1),
-        "resnet50" : (models.resnet50,  models.ResNet50_Weights.IMAGENET1K_V1),
-        "resnet101": (models.resnet101, models.ResNet101_Weights.IMAGENET1K_V1),
-    }
-
     def __init__(
         self,
         num_classes: int,
@@ -77,14 +71,8 @@ class ResNetClassifier(BaseClassifier):
         super().__init__(num_classes)   # gọi build_backbone() bên trong
 
     def build_backbone(self) -> nn.Module:
-        if self.model_name not in self.SUPPORTED:
-            raise ValueError(
-                f"Unsupported model: {self.model_name}. "
-                f"Choose from: {list(self.SUPPORTED.keys())}"
-            )
-
-        model_fn, weights = self.SUPPORTED[self.model_name]
-        net = model_fn(weights=weights if self.pretrained else None)
+        spec = get_rgb_backbone_spec(self.model_name)
+        net = spec.model_fn(weights=spec.weights if self.pretrained else None)
 
         in_features = net.fc.in_features
         if self.dropout_p > 0.0:
@@ -274,13 +262,6 @@ class MultimodalClassifier(nn.Module):
         fusion_hidden:   Số neurons lớp ẩn trong Fusion Head (0 = bỏ qua).
     """
 
-    SUPPORTED_RGB = {
-        "resnet18" : (models.resnet18,  models.ResNet18_Weights.IMAGENET1K_V1,  512),
-        "resnet34" : (models.resnet34,  models.ResNet34_Weights.IMAGENET1K_V1,  512),
-        "resnet50" : (models.resnet50,  models.ResNet50_Weights.IMAGENET1K_V1,  2048),
-        "resnet101": (models.resnet101, models.ResNet101_Weights.IMAGENET1K_V1, 2048),
-    }
-
     def __init__(
         self,
         num_classes:    int,
@@ -295,13 +276,9 @@ class MultimodalClassifier(nn.Module):
         self.num_classes = num_classes
 
         # ── RGB Branch (ResNet backbone, bỏ FC cuối) ──────────────────────────
-        if rgb_model not in self.SUPPORTED_RGB:
-            raise ValueError(
-                f"Unsupported rgb_model: '{rgb_model}'. "
-                f"Choose from: {list(self.SUPPORTED_RGB.keys())}"
-            )
-        model_fn, weights, rgb_feat = self.SUPPORTED_RGB[rgb_model]
-        _resnet = model_fn(weights=weights if rgb_pretrained else None)
+        spec = get_rgb_backbone_spec(rgb_model)
+        rgb_feat = spec.out_features
+        _resnet = spec.model_fn(weights=spec.weights if rgb_pretrained else None)
         # Bỏ lớp FC cuối → chỉ giữ feature extractor
         self.rgb_branch = nn.Sequential(*list(_resnet.children())[:-1])  # → (B, rgb_feat, 1, 1)
         self.rgb_flatten = nn.Flatten()

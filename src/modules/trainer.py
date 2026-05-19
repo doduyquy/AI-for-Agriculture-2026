@@ -52,6 +52,7 @@ class Trainer:
 
         self.history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
         self.best_val_acc = 0.0
+        self.best_train_loss = float("inf")
 
     # ──────────────────────────────────────────────
     # Internal helpers
@@ -127,6 +128,9 @@ class Trainer:
 
     @torch.no_grad()
     def evaluate(self):
+        if self.val_loader is None:
+            raise RuntimeError("evaluate() được gọi nhưng val_loader=None.")
+
         self.model.eval()
         total_loss, correct, total = 0.0, 0, 0
 
@@ -155,12 +159,18 @@ class Trainer:
             if 'model_state_dict' in checkpoint:
                 self.model.load_state_dict(checkpoint['model_state_dict'])
                 self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                if self.scheduler is not None and checkpoint.get('scheduler_state_dict') is not None:
+                    self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                 start_epoch = checkpoint.get('epoch', 0) + 1
                 self.best_val_acc = checkpoint.get('best_val_acc', 0.0)
+                self.best_train_loss = checkpoint.get('best_train_loss', float("inf"))
                 if 'history' in checkpoint:
                     self.history = checkpoint['history']
-                print(f"  ↩  Restored epoch={start_epoch - 1}  best_val_acc={self.best_val_acc:.4f}")
+                print(
+                    f"  ↩  Restored epoch={start_epoch - 1}  "
+                    f"best_val_acc={self.best_val_acc:.4f}  "
+                    f"best_train_loss={self.best_train_loss:.4f}"
+                )
             else:
                 self.model.load_state_dict(checkpoint)   # fallback
                 print("  ↩  Loaded weights (legacy format — no optimizer/scheduler state)")
@@ -176,6 +186,10 @@ class Trainer:
         print(f"  LR (init)  : {self._current_lr():.2e}")
         print(f"  Device     : {self.device}")
         print(f"  Checkpoint : {self.save_path}")
+        if self.val_loader is None:
+            print("  Validation : disabled (train full labeled set; save best by train loss)")
+        else:
+            print("  Validation : internal labeled split enabled")
         _sep()
 
         total_train_time = 0.0
@@ -191,12 +205,15 @@ class Trainer:
             train_loss, train_acc = self.train_one_epoch(epoch)
 
             # ── Evaluate ───────────────────────────────────────────────────
-            print(f"  → Evaluating on val set...", end=" ", flush=True)
-            val_loss, val_acc = self.evaluate()
-            print(f"done.")
+            val_loss, val_acc = None, None
+            if self.val_loader is not None:
+                print(f"  → Evaluating on val set...", end=" ", flush=True)
+                val_loss, val_acc = self.evaluate()
+                print(f"done.")
 
             # ── Scheduler step (detect LR change) ─────────────────────────
-            self.scheduler.step(val_acc)
+            if self.scheduler is not None and val_acc is not None:
+                self.scheduler.step(val_acc)
             lr_after = self._current_lr()
             if lr_after != lr_before:
                 print(
@@ -214,29 +231,39 @@ class Trainer:
             try:
                 import wandb
                 if wandb.run is not None:
-                    wandb.log({
+                    log_payload = {
                         "epoch"      : epoch,
                         "train/loss" : train_loss,
                         "train/acc"  : train_acc,
-                        "val/loss"   : val_loss,
-                        "val/acc"    : val_acc,
                         "lr"         : lr_after,
-                    })
+                    }
+                    if val_loss is not None and val_acc is not None:
+                        log_payload.update({
+                            "val/loss": val_loss,
+                            "val/acc": val_acc,
+                        })
+                    wandb.log(log_payload)
             except ImportError:
                 pass
 
             # ── Best model ────────────────────────────────────────────────
-            is_best = val_acc > self.best_val_acc
-            if is_best:
-                self.best_val_acc = val_acc
+            if val_acc is not None:
+                is_best = val_acc >= self.best_val_acc
+                if is_best:
+                    self.best_val_acc = val_acc
+            else:
+                is_best = train_loss < self.best_train_loss
+                if is_best:
+                    self.best_train_loss = train_loss
 
             # ── Checkpoint ────────────────────────────────────────────────
             checkpoint_state = {
                 'epoch'               : epoch,
                 'model_state_dict'    : self.model.state_dict(),
                 'optimizer_state_dict': self.optimizer.state_dict(),
-                'scheduler_state_dict': self.scheduler.state_dict(),
+                'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler is not None else None,
                 'best_val_acc'        : self.best_val_acc,
+                'best_train_loss'     : self.best_train_loss,
                 'history'             : self.history,
                 'is_multimodal'       : self.is_multimodal,
             }
@@ -254,16 +281,26 @@ class Trainer:
             total_train_time += epoch_time
 
             best_tag = " ⭐ NEW BEST" if is_best else ""
-            print(
-                f"\n  [Epoch {epoch:02d} Summary] Time: {epoch_time:.1f}s\n"
-                f"   - Train : loss={train_loss:.4f}, acc={train_acc:.4f}\n"
-                f"   - Val   : loss={val_loss:.4f}, acc={val_acc:.4f}{best_tag} (best: {self.best_val_acc:.4f})\n"
-            )
+            if val_acc is not None:
+                print(
+                    f"\n  [Epoch {epoch:02d} Summary] Time: {epoch_time:.1f}s\n"
+                    f"   - Train : loss={train_loss:.4f}, acc={train_acc:.4f}\n"
+                    f"   - Val   : loss={val_loss:.4f}, acc={val_acc:.4f}{best_tag} (best: {self.best_val_acc:.4f})\n"
+                )
+            else:
+                print(
+                    f"\n  [Epoch {epoch:02d} Summary] Time: {epoch_time:.1f}s\n"
+                    f"   - Train : loss={train_loss:.4f}, acc={train_acc:.4f}{best_tag} "
+                    f"(best loss: {self.best_train_loss:.4f})\n"
+                )
 
         # ── Training complete ──────────────────────────────────────────────
         _header("TRAINING COMPLETE")
         print(f"  Total time   : {total_train_time/60:.1f} min")
-        print(f"  Best val_acc : {self.best_val_acc:.4f}")
+        if self.val_loader is not None:
+            print(f"  Best val_acc : {self.best_val_acc:.4f}")
+        else:
+            print(f"  Best train_loss : {self.best_train_loss:.4f}")
         print(f"  Best model   : {self.save_path}")
         print(f"  Last model   : {self.save_path.replace('.pth', '_last.pth')}")
         _sep()
