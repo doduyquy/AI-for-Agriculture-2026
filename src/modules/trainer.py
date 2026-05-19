@@ -240,8 +240,12 @@ class Trainer:
                 val_loss, val_acc, y_true, y_pred = self.evaluate()
 
             # ── Scheduler step (detect LR change) ─────────────────────────
-            if self.scheduler is not None and val_acc is not None:
-                self.scheduler.step(val_acc)
+            if self.scheduler is not None:
+                if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    if val_acc is not None:
+                        self.scheduler.step(val_acc)
+                else:
+                    self.scheduler.step()
             lr_after = self._current_lr()
             if lr_after != lr_before:
                 print(

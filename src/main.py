@@ -269,10 +269,35 @@ def main():
 
     # 4. Training Setup
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=cfg.LR)
+    
+    # Optimizer configuration
+    opt_name = getattr(cfg, 'OPTIMIZER', 'Adam').lower()
+    weight_decay = getattr(cfg, 'WEIGHT_DECAY', 0.0)
+    if opt_name == 'adamw':
+        optimizer = optim.AdamW(model.parameters(), lr=cfg.LR, weight_decay=weight_decay)
+    elif opt_name == 'sgd':
+        momentum = getattr(cfg, 'MOMENTUM', 0.9)
+        optimizer = optim.SGD(model.parameters(), lr=cfg.LR, momentum=momentum, weight_decay=weight_decay)
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=cfg.LR, weight_decay=weight_decay)
+
+    # Scheduler configuration
     scheduler = None
-    if val_loader is not None:
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
+    sched_name = getattr(cfg, 'SCHEDULER', 'ReduceLROnPlateau' if val_loader is not None else None)
+    if sched_name:
+        sched_name = sched_name.lower()
+        if sched_name == 'steplr':
+            step_size = getattr(cfg, 'STEP_SIZE', 10)
+            gamma = getattr(cfg, 'GAMMA', 0.1)
+            scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+        elif sched_name == 'cosine':
+            t_max = getattr(cfg, 'T_MAX', cfg.EPOCHS)
+            eta_min = getattr(cfg, 'ETA_MIN', 0)
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
+        elif sched_name == 'reducelronplateau' and val_loader is not None:
+            factor = getattr(cfg, 'FACTOR', 0.5)
+            patience = getattr(cfg, 'PATIENCE', 3)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=factor, patience=patience)
 
     mode_prefix = "multimodal" if is_multimodal else "rgb"
     save_name = f"{mode_prefix}_{cfg.MODEL_NAME}_imgsize{cfg.IMG_SIZE}_batch{cfg.BATCH_SIZE}_epoch{cfg.EPOCHS}_lr{cfg.LR}.pth"
