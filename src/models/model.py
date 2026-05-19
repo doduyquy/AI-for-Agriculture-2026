@@ -15,7 +15,7 @@ from typing import Optional, Any
 import torch
 import torch.nn as nn
 
-from src.models import get_rgb_backbone_spec
+from src.models import get_model_builder, get_rgb_backbone_spec
 
 # ──────────────────────────────────────────────
 # Abstract base
@@ -136,6 +136,22 @@ def build_model(
     Returns:
         model đã .to(device)
     """
+    model_builder = get_model_builder(cfg.MODEL_NAME)
+    if model_builder is not None:
+        model = model_builder(
+            num_classes=cfg.NUM_CLASSES,
+            pretrained=pretrained,
+            dropout=dropout_p,
+        ).to(device)
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f"[{model.__class__.__name__}]")
+        print(f"  num_classes : {cfg.NUM_CLASSES}")
+        print(f"  pretrained  : {pretrained}")
+        print(f"  dropout     : {dropout_p}")
+        print(f"  parameters  : {total_params:,}")
+        print(f"  device      : {next(model.parameters()).device}")
+        return model
+
     model = ResNetClassifier(
         num_classes=cfg.NUM_CLASSES,
         model_name=cfg.MODEL_NAME,

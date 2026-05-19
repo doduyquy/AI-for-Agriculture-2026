@@ -3,6 +3,8 @@ from typing import Any, Callable, Dict, List
 
 import torchvision.models as tv_models
 
+from src.models.resnet18_rgb import Resnet18
+
 
 @dataclass(frozen=True)
 class RGBBackboneSpec:
@@ -12,6 +14,7 @@ class RGBBackboneSpec:
 
 
 RGB_BACKBONES: Dict[str, RGBBackboneSpec] = {}
+MODEL_REGISTRY: Dict[str, Callable[..., Any]] = {}
 
 
 def register_rgb_backbone(name: str, model_fn: Callable[..., Any], weights: Any, out_features: int):
@@ -35,6 +38,20 @@ def get_rgb_backbone_spec(name: str) -> RGBBackboneSpec:
 
 def list_rgb_backbones() -> List[str]:
     return sorted(RGB_BACKBONES.keys())
+
+
+def register_model(name: str, model_cls: Callable[..., Any]):
+    if name in MODEL_REGISTRY:
+        raise ValueError(f"Model already registered: {name}")
+    MODEL_REGISTRY[name] = model_cls
+
+
+def get_model_builder(name: str) -> Callable[..., Any] | None:
+    return MODEL_REGISTRY.get(name)
+
+
+def list_models() -> List[str]:
+    return sorted(MODEL_REGISTRY.keys())
 
 
 # Default RGB backbones.
@@ -62,3 +79,7 @@ register_rgb_backbone(
     tv_models.ResNet101_Weights.IMAGENET1K_V1,
     out_features=2048,
 )
+
+
+# Custom full models.
+register_model("resnet18_rgb", Resnet18)
