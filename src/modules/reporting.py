@@ -53,6 +53,9 @@ def save_confusion_matrix_artifacts(
     os.makedirs(output_dir, exist_ok=True)
     labels = list(range(len(class_names)))
     cm = confusion_matrix(y_true, y_pred, labels=labels)
+    total = int(cm.sum())
+    correct = int(np.trace(cm))
+    accuracy = correct / total if total else 0.0
 
     csv_path = os.path.join(output_dir, f"{prefix}_confusion_matrix.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -61,10 +64,19 @@ def save_confusion_matrix_artifacts(
         for class_name, row in zip(class_names, cm):
             writer.writerow([class_name, *row.tolist()])
 
+    summary_path = os.path.join(output_dir, f"{prefix}_metrics_summary.csv")
+    with open(summary_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["metric", "value"])
+        writer.writerow(["accuracy", accuracy])
+        writer.writerow(["accuracy_percent", accuracy * 100.0])
+        writer.writerow(["correct", correct])
+        writer.writerow(["total", total])
+
     png_path = os.path.join(output_dir, f"{prefix}_confusion_matrix.png")
     saved_png = _save_confusion_matrix_png(cm, class_names, png_path)
 
-    return {"csv": csv_path, "png": saved_png}
+    return {"csv": csv_path, "png": saved_png, "summary": summary_path}
 
 
 def _save_confusion_matrix_png(cm: np.ndarray, class_names: List[str], output_path: str) -> Optional[str]:
@@ -80,6 +92,10 @@ def _save_confusion_matrix_png(cm: np.ndarray, class_names: List[str], output_pa
     im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
+    total = int(cm.sum())
+    correct = int(np.trace(cm))
+    accuracy = correct / total if total else 0.0
+
     ax.set(
         xticks=np.arange(len(class_names)),
         yticks=np.arange(len(class_names)),
@@ -87,6 +103,7 @@ def _save_confusion_matrix_png(cm: np.ndarray, class_names: List[str], output_pa
         yticklabels=class_names,
         ylabel="Actual",
         xlabel="Predicted",
+        title=f"Accuracy: {accuracy:.2%} ({correct}/{total})",
     )
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right", rotation_mode="anchor")
 
