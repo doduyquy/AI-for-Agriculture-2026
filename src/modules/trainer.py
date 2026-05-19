@@ -63,6 +63,8 @@ class Trainer:
         self.history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
         self.history_rows = []
         self.best_val_acc = 0.0
+        self.best_val_loss = float("inf")
+        self.best_epoch = 0
         self.best_train_loss = float("inf")
         self.history_csv_path = (
             os.path.join(output_dir, "training_history.csv") if output_dir else None
@@ -178,6 +180,8 @@ class Trainer:
                     self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                 start_epoch = checkpoint.get('epoch', 0) + 1
                 self.best_val_acc = checkpoint.get('best_val_acc', 0.0)
+                self.best_val_loss = checkpoint.get('best_val_loss', float("inf"))
+                self.best_epoch = checkpoint.get('best_epoch', 0)
                 self.best_train_loss = checkpoint.get('best_train_loss', float("inf"))
                 if 'history' in checkpoint:
                     self.history = checkpoint['history']
@@ -186,6 +190,7 @@ class Trainer:
                 print(
                     f"  ↩  Restored epoch={start_epoch - 1}  "
                     f"best_val_acc={self.best_val_acc:.4f}  "
+                    f"best_epoch={self.best_epoch}  "
                     f"best_train_loss={self.best_train_loss:.4f}"
                 )
             else:
@@ -214,10 +219,10 @@ class Trainer:
             print("  Validation : internal labeled split enabled")
         _sep()
         print(
-            "  epoch | lr       | train_loss | train_acc | val_loss | val_acc | best_val | time"
+            "  epoch | lr       | train_loss | train_acc | val_loss | val_acc | best_val | best_ep | time"
         )
         print(
-            "  ------+----------+------------+-----------+----------+---------+----------+------"
+            "  ------+----------+------------+-----------+----------+---------+----------+---------+------"
         )
 
         total_train_time = 0.0
@@ -252,13 +257,19 @@ class Trainer:
 
             # ── Best model ────────────────────────────────────────────────
             if val_acc is not None:
-                is_best = val_acc >= self.best_val_acc
+                acc_is_better = val_acc > self.best_val_acc
+                acc_is_tied = np.isclose(val_acc, self.best_val_acc)
+                loss_breaks_tie = val_loss is not None and val_loss < self.best_val_loss
+                is_best = acc_is_better or (acc_is_tied and loss_breaks_tie)
                 if is_best:
                     self.best_val_acc = val_acc
+                    self.best_val_loss = val_loss if val_loss is not None else float("inf")
+                    self.best_epoch = epoch
             else:
                 is_best = train_loss < self.best_train_loss
                 if is_best:
                     self.best_train_loss = train_loss
+                    self.best_epoch = epoch
 
             epoch_time = time.time() - epoch_t0
             total_train_time += epoch_time
@@ -270,6 +281,8 @@ class Trainer:
                 "val_loss": val_loss,
                 "val_acc": val_acc,
                 "best_val_acc": self.best_val_acc,
+                "best_val_loss": self.best_val_loss,
+                "best_epoch": self.best_epoch,
                 "best_train_loss": self.best_train_loss,
                 "epoch_time_sec": epoch_time,
                 "is_best": is_best,
@@ -329,6 +342,8 @@ class Trainer:
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler is not None else None,
                 'best_val_acc'        : self.best_val_acc,
+                'best_val_loss'       : self.best_val_loss,
+                'best_epoch'          : self.best_epoch,
                 'best_train_loss'     : self.best_train_loss,
                 'history'             : self.history,
                 'history_rows'        : self.history_rows,
@@ -349,7 +364,7 @@ class Trainer:
             print(
                 f"  {epoch:>5d} | {lr_after:.2e} | {train_loss:>10.4f} |"
                 f" {train_acc:>9.4f} | {val_loss_text:>8} | {val_acc_text:>7} |"
-                f" {best_val_text:>8}{best_mark} | {epoch_time:>4.0f}s"
+                f" {best_val_text:>8}{best_mark} | {self.best_epoch:>7d} | {epoch_time:>4.0f}s"
             )
             if confusion_paths:
                 print(f"        confusion csv: {confusion_paths.get('csv')}")
@@ -361,8 +376,11 @@ class Trainer:
         print(f"  Total time   : {total_train_time/60:.1f} min")
         if self.val_loader is not None:
             print(f"  Best val_acc : {self.best_val_acc:.4f}")
+            print(f"  Best val_loss: {self.best_val_loss:.4f}")
+            print(f"  Best epoch   : {self.best_epoch}")
         else:
             print(f"  Best train_loss : {self.best_train_loss:.4f}")
+            print(f"  Best epoch      : {self.best_epoch}")
         print(f"  Best model   : {self.save_path}")
         print(f"  Last model   : {self.save_path.replace('.pth', '_last.pth')}")
         _sep()

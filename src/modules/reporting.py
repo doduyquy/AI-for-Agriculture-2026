@@ -28,6 +28,8 @@ def save_history_csv(rows: Iterable[Mapping], output_path: str) -> str:
         "val_loss",
         "val_acc",
         "best_val_acc",
+        "best_val_loss",
+        "best_epoch",
         "best_train_loss",
         "epoch_time_sec",
         "is_best",

@@ -303,6 +303,10 @@ def main():
     eval_artifact_paths = {}
     if val_loader is not None:
         evaluator = Evaluator(model, val_loader, device, class_names, is_multimodal=is_multimodal)
+        print(
+            f"[Eval] Loading BEST checkpoint for final validation: {save_path} "
+            f"(best_epoch={trainer.best_epoch}, best_val_acc={trainer.best_val_acc:.4f})"
+        )
         y_true, y_pred, report_dict = evaluator.evaluate(model_path=save_path)
         eval_artifact_paths.update(save_classification_report_artifacts(
             report_dict,
@@ -330,6 +334,10 @@ def main():
     if test_loader is not None:
         inferencer = Inferencer(model, test_loader, device, train_ds.idx_to_class, is_multimodal=is_multimodal)
         submission_path = os.path.join(cfg.ROOT_DIR, "submission.csv")
+        print(
+            f"[Inference] Loading BEST checkpoint for submission: {save_path} "
+            f"(best_epoch={trainer.best_epoch})"
+        )
         inferencer.predict(model_path=save_path, output_csv=submission_path)
         output_submission_path = os.path.join(output_dir, "submission.csv")
         if submission_path != output_submission_path:
