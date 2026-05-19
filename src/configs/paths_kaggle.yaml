@@ -1,6 +1,7 @@
 # Paths for Kaggle Environment
 DATA_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20'
 CHECKPOINT_DIR: '/kaggle/working/checkpoints' # /kaggle/working là thư mục duy nhất cho phép ghi file
+OUTPUT_DIR: '/kaggle/working/outputs' # Lưu metric CSV, confusion matrix, report để hiện trong Kaggle Output Data
 
 # Đường dẫn dữ liệu hình ảnh (Read-only từ dataset)
 TRAIN_DIR: '/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20/train'

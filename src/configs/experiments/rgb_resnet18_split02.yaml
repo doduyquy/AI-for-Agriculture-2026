@@ -6,6 +6,7 @@
 # bash run.sh
 
 INPUT_MODE: "rgb"
+DEVICE: "cuda"
 MODEL_NAME: "resnet18"
 RGB_PRETRAINED: true
 DROPOUT_P: 0.2

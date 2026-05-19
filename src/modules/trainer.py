@@ -3,6 +3,8 @@ import time
 import torch
 import numpy as np
 
+from src.modules.reporting import save_confusion_matrix_artifacts, save_history_csv
+
 
 # ──────────────────────────────────────────────
 # Helpers in ra console
@@ -38,6 +40,10 @@ class Trainer:
         save_path,
         epochs,
         is_multimodal: bool = False,
+        output_dir=None,
+        class_names=None,
+        log_batch_every: int = 0,
+        log_confusion_every: int = 1,
     ):
         self.model         = model
         self.train_loader  = train_loader
@@ -49,10 +55,18 @@ class Trainer:
         self.save_path     = save_path
         self.epochs        = epochs
         self.is_multimodal = is_multimodal
+        self.output_dir    = output_dir
+        self.class_names   = class_names
+        self.log_batch_every = max(0, int(log_batch_every or 0))
+        self.log_confusion_every = max(0, int(log_confusion_every or 0))
 
         self.history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
+        self.history_rows = []
         self.best_val_acc = 0.0
         self.best_train_loss = float("inf")
+        self.history_csv_path = (
+            os.path.join(output_dir, "training_history.csv") if output_dir else None
+        )
 
     # ──────────────────────────────────────────────
     # Internal helpers
@@ -111,9 +125,7 @@ class Trainer:
             correct += (preds == labels).sum().item()
             total   += labels.size(0)
 
-            # In tiến trình mỗi 10% số batch (tối đa mỗi 10 batch)
-            log_every = max(1, n_batches // 10)
-            if batch_idx % log_every == 0 or batch_idx == n_batches:
+            if self.log_batch_every and (batch_idx % self.log_batch_every == 0 or batch_idx == n_batches):
                 cur_loss = total_loss / total
                 cur_acc  = correct / total
                 elapsed  = time.time() - t0
@@ -133,6 +145,7 @@ class Trainer:
 
         self.model.eval()
         total_loss, correct, total = 0.0, 0, 0
+        y_true, y_pred = [], []
 
         for batch in self.val_loader:
             outputs, labels = self._forward(batch)
@@ -143,8 +156,10 @@ class Trainer:
             preds = outputs.argmax(dim=1)
             correct += (preds == labels).sum().item()
             total   += labels.size(0)
+            y_true.extend(labels.detach().cpu().numpy().tolist())
+            y_pred.extend(preds.detach().cpu().numpy().tolist())
 
-        return total_loss / total, correct / total
+        return total_loss / total, correct / total, np.array(y_true), np.array(y_pred)
 
     # ──────────────────────────────────────────────
     # Main training loop
@@ -166,6 +181,8 @@ class Trainer:
                 self.best_train_loss = checkpoint.get('best_train_loss', float("inf"))
                 if 'history' in checkpoint:
                     self.history = checkpoint['history']
+                if 'history_rows' in checkpoint:
+                    self.history_rows = checkpoint['history_rows']
                 print(
                     f"  ↩  Restored epoch={start_epoch - 1}  "
                     f"best_val_acc={self.best_val_acc:.4f}  "
@@ -178,6 +195,8 @@ class Trainer:
 
         # Ensure checkpoint directory exists
         os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok=True)
 
         # ── Training banner ────────────────────────────────────────────────
         mode_tag = "Multimodal Late Fusion (HS + MS + RGB)" if self.is_multimodal else "RGB-only (ResNet)"
@@ -186,11 +205,20 @@ class Trainer:
         print(f"  LR (init)  : {self._current_lr():.2e}")
         print(f"  Device     : {self.device}")
         print(f"  Checkpoint : {self.save_path}")
+        if self.output_dir:
+            print(f"  Output dir : {self.output_dir}")
+            print(f"  History CSV: {self.history_csv_path}")
         if self.val_loader is None:
             print("  Validation : disabled (train full labeled set; save best by train loss)")
         else:
             print("  Validation : internal labeled split enabled")
         _sep()
+        print(
+            "  epoch | lr       | train_loss | train_acc | val_loss | val_acc | best_val | time"
+        )
+        print(
+            "  ------+----------+------------+-----------+----------+---------+----------+------"
+        )
 
         total_train_time = 0.0
 
@@ -198,18 +226,13 @@ class Trainer:
             epoch_t0 = time.time()
             lr_before = self._current_lr()
 
-            # ── Train ──────────────────────────────────────────────────────
-            print(f"\n{'─'*72}")
-            print(f"  Epoch {epoch:02d}/{self.epochs}  |  LR = {lr_before:.2e}")
-            print(f"{'─'*72}")
             train_loss, train_acc = self.train_one_epoch(epoch)
 
             # ── Evaluate ───────────────────────────────────────────────────
             val_loss, val_acc = None, None
+            y_true, y_pred = None, None
             if self.val_loader is not None:
-                print(f"  → Evaluating on val set...", end=" ", flush=True)
-                val_loss, val_acc = self.evaluate()
-                print(f"done.")
+                val_loss, val_acc, y_true, y_pred = self.evaluate()
 
             # ── Scheduler step (detect LR change) ─────────────────────────
             if self.scheduler is not None and val_acc is not None:
@@ -227,6 +250,52 @@ class Trainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_acc"].append(val_acc)
 
+            # ── Best model ────────────────────────────────────────────────
+            if val_acc is not None:
+                is_best = val_acc >= self.best_val_acc
+                if is_best:
+                    self.best_val_acc = val_acc
+            else:
+                is_best = train_loss < self.best_train_loss
+                if is_best:
+                    self.best_train_loss = train_loss
+
+            epoch_time = time.time() - epoch_t0
+            total_train_time += epoch_time
+            row = {
+                "epoch": epoch,
+                "lr": lr_after,
+                "train_loss": train_loss,
+                "train_acc": train_acc,
+                "val_loss": val_loss,
+                "val_acc": val_acc,
+                "best_val_acc": self.best_val_acc,
+                "best_train_loss": self.best_train_loss,
+                "epoch_time_sec": epoch_time,
+                "is_best": is_best,
+            }
+            self.history_rows.append(row)
+            if self.history_csv_path:
+                save_history_csv(self.history_rows, self.history_csv_path)
+
+            should_log_confusion = (
+                self.val_loader is not None
+                and y_true is not None
+                and y_pred is not None
+                and self.class_names
+                and self.log_confusion_every
+                and (epoch % self.log_confusion_every == 0 or epoch == self.epochs or is_best)
+            )
+            confusion_paths = {}
+            if should_log_confusion and self.output_dir:
+                confusion_paths = save_confusion_matrix_artifacts(
+                    y_true,
+                    y_pred,
+                    self.class_names,
+                    self.output_dir,
+                    prefix=f"val_epoch_{epoch:03d}",
+                )
+
             # ── Log to WandB ───────────────────────────────────────────────
             try:
                 import wandb
@@ -242,19 +311,16 @@ class Trainer:
                             "val/loss": val_loss,
                             "val/acc": val_acc,
                         })
+                    if should_log_confusion:
+                        log_payload["val/confusion_matrix"] = wandb.plot.confusion_matrix(
+                            probs=None,
+                            y_true=y_true,
+                            preds=y_pred,
+                            class_names=self.class_names,
+                        )
                     wandb.log(log_payload)
             except ImportError:
                 pass
-
-            # ── Best model ────────────────────────────────────────────────
-            if val_acc is not None:
-                is_best = val_acc >= self.best_val_acc
-                if is_best:
-                    self.best_val_acc = val_acc
-            else:
-                is_best = train_loss < self.best_train_loss
-                if is_best:
-                    self.best_train_loss = train_loss
 
             # ── Checkpoint ────────────────────────────────────────────────
             checkpoint_state = {
@@ -265,34 +331,30 @@ class Trainer:
                 'best_val_acc'        : self.best_val_acc,
                 'best_train_loss'     : self.best_train_loss,
                 'history'             : self.history,
+                'history_rows'        : self.history_rows,
                 'is_multimodal'       : self.is_multimodal,
             }
 
             last_save_path = self.save_path.replace('.pth', '_last.pth')
             torch.save(checkpoint_state, last_save_path)
-            print(f"  💾 Checkpoint saved → {os.path.basename(last_save_path)}")
 
             if is_best:
                 torch.save(checkpoint_state, self.save_path)
-                print(f"  💾 Best model saved → {os.path.basename(self.save_path)}")
 
             # ── Epoch summary ─────────────────────────────────────────────
-            epoch_time = time.time() - epoch_t0
-            total_train_time += epoch_time
-
-            best_tag = " ⭐ NEW BEST" if is_best else ""
-            if val_acc is not None:
-                print(
-                    f"\n  [Epoch {epoch:02d} Summary] Time: {epoch_time:.1f}s\n"
-                    f"   - Train : loss={train_loss:.4f}, acc={train_acc:.4f}\n"
-                    f"   - Val   : loss={val_loss:.4f}, acc={val_acc:.4f}{best_tag} (best: {self.best_val_acc:.4f})\n"
-                )
-            else:
-                print(
-                    f"\n  [Epoch {epoch:02d} Summary] Time: {epoch_time:.1f}s\n"
-                    f"   - Train : loss={train_loss:.4f}, acc={train_acc:.4f}{best_tag} "
-                    f"(best loss: {self.best_train_loss:.4f})\n"
-                )
+            best_mark = "*" if is_best else ""
+            val_loss_text = f"{val_loss:.4f}" if val_loss is not None else "   n/a"
+            val_acc_text = f"{val_acc:.4f}" if val_acc is not None else "   n/a"
+            best_val_text = f"{self.best_val_acc:.4f}" if self.val_loader is not None else "   n/a"
+            print(
+                f"  {epoch:>5d} | {lr_after:.2e} | {train_loss:>10.4f} |"
+                f" {train_acc:>9.4f} | {val_loss_text:>8} | {val_acc_text:>7} |"
+                f" {best_val_text:>8}{best_mark} | {epoch_time:>4.0f}s"
+            )
+            if confusion_paths:
+                print(f"        confusion csv: {confusion_paths.get('csv')}")
+                if confusion_paths.get("png"):
+                    print(f"        confusion png: {confusion_paths.get('png')}")
 
         # ── Training complete ──────────────────────────────────────────────
         _header("TRAINING COMPLETE")

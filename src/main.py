@@ -1,4 +1,5 @@
 import os
+import shutil
 from src.opts import parse_args
 import torch
 import torch.nn as nn
@@ -23,6 +24,10 @@ from src.models.model import build_model, build_multimodal_model
 from src.modules.trainer import Trainer
 from src.modules.evaluate import Evaluator
 from src.modules.inference import Inferencer
+from src.modules.reporting import (
+    save_classification_report_artifacts,
+    save_confusion_matrix_artifacts,
+)
 
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
@@ -100,6 +105,12 @@ def main():
     set_seed(cfg.SEED)
     device = cfg.device
     print(f"Using device: {device}")
+    output_dir = getattr(cfg, 'OUTPUT_DIR', None)
+    if not output_dir:
+        output_dir = os.path.join(getattr(cfg, 'ROOT_DIR', '.'), 'outputs')
+        cfg.OUTPUT_DIR = output_dir
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"[Output] Artifacts dir : {output_dir}")
 
     input_mode = str(getattr(cfg, "INPUT_MODE", "multimodal")).lower().replace("-", "_")
     if input_mode in {"rgb", "rgb_only", "single_rgb"}:
@@ -243,6 +254,7 @@ def main():
           f"train={len(train_ds)}  val={len(val_ds) if val_ds else 0}  "
           f"test={len(test_ds) if test_ds else 0}")
     print(f"[Data] Classes       : {class_to_idx}")
+    class_names = [train_ds.idx_to_class[i] for i in range(len(class_to_idx))]
     
     # 3. Model Definition
     if is_multimodal:
@@ -278,16 +290,39 @@ def main():
         save_path=save_path,
         epochs=cfg.EPOCHS,
         is_multimodal=is_multimodal,
+        output_dir=output_dir,
+        class_names=class_names,
+        log_batch_every=getattr(cfg, 'LOG_BATCH_EVERY_N', 0),
+        log_confusion_every=getattr(cfg, 'LOG_CONFUSION_EVERY_N', 1),
     )
     
     history = trainer.train(resume_path=args.resume)
     
     # 6. Evaluation (chỉ chạy khi có val split nội bộ)
-    class_names = [train_ds.idx_to_class[i] for i in range(len(class_to_idx))]
     y_true, y_pred, report_dict = None, None, {}
+    eval_artifact_paths = {}
     if val_loader is not None:
         evaluator = Evaluator(model, val_loader, device, class_names, is_multimodal=is_multimodal)
         y_true, y_pred, report_dict = evaluator.evaluate(model_path=save_path)
+        eval_artifact_paths.update(save_classification_report_artifacts(
+            report_dict,
+            output_dir,
+            prefix="final_val",
+        ))
+        eval_artifact_paths.update({
+            f"confusion_{key}": value
+            for key, value in save_confusion_matrix_artifacts(
+                y_true,
+                y_pred,
+                class_names,
+                output_dir,
+                prefix="final_val",
+            ).items()
+            if value
+        })
+        print("[Output] Final validation artifacts:")
+        for path in eval_artifact_paths.values():
+            print(f"  - {path}")
     else:
         print("[INFO] Không có labeled validation split → bỏ qua classification report.")
 
@@ -296,6 +331,10 @@ def main():
         inferencer = Inferencer(model, test_loader, device, train_ds.idx_to_class, is_multimodal=is_multimodal)
         submission_path = os.path.join(cfg.ROOT_DIR, "submission.csv")
         inferencer.predict(model_path=save_path, output_csv=submission_path)
+        output_submission_path = os.path.join(output_dir, "submission.csv")
+        if submission_path != output_submission_path:
+            shutil.copy2(submission_path, output_submission_path)
+            print(f"[Output] Submission copy : {output_submission_path}")
     else:
         submission_path = None
         print("[INFO] Không có test set → bỏ qua inference.")
@@ -316,6 +355,12 @@ def main():
             wandb.log({"conf_mat" : wandb.plot.confusion_matrix(probs=None,
                             y_true=y_true, preds=y_pred,
                             class_names=class_names)})
+
+        # Save output files as artifact for easy retrieval.
+        if os.path.exists(output_dir):
+            output_artifact = wandb.Artifact('kaggle-output-files', type='dataset')
+            output_artifact.add_dir(output_dir)
+            wandb.log_artifact(output_artifact)
         
         # Save submission file as artifact
         if submission_path and os.path.exists(submission_path):
