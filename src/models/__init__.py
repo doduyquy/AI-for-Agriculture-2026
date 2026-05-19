@@ -5,6 +5,7 @@ import torchvision.models as tv_models
 
 from src.models.resnet18_rgb import Resnet18
 from src.models.resnet_34_rgb import Resnet34
+from src.models.efficientnet_b0_rgb import EfficientNetB0
 
 
 @dataclass(frozen=True)
@@ -85,3 +86,12 @@ register_rgb_backbone(
 # Custom full models.
 register_model("resnet18_rgb", Resnet18)
 register_model("resnet34_rgb", Resnet34)
+register_model("efficientnet_b0_rgb", EfficientNetB0)
+
+# EfficientNet backbone.
+register_rgb_backbone(
+    "efficientnet_b0",
+    tv_models.efficientnet_b0,
+    tv_models.EfficientNet_B0_Weights.IMAGENET1K_V1,
+    out_features=1280,
+)
