@@ -97,7 +97,8 @@ def main():
         if wandb_api_key:
             wandb.login(key=wandb_api_key)
             
-        run_name = args.wandb_run_name if args.wandb_run_name else f"{cfg.MODEL_NAME}_imgsize{cfg.IMG_SIZE}_batch{cfg.BATCH_SIZE}_lr{cfg.LR}"
+        base_lr = getattr(cfg, 'LR', getattr(cfg, 'HEAD_LR', 0.0001))
+        run_name = args.wandb_run_name if args.wandb_run_name else f"{cfg.MODEL_NAME}_imgsize{cfg.IMG_SIZE}_batch{cfg.BATCH_SIZE}_lr{base_lr}"
         wandb.init(project=args.wandb_project, entity=args.wandb_entity, name=run_name, config=dict(cfg))
         wandb.config.update(vars(args))
     
@@ -280,13 +281,33 @@ def main():
     # Optimizer configuration
     opt_name = getattr(cfg, 'OPTIMIZER', 'Adam').lower()
     weight_decay = getattr(cfg, 'WEIGHT_DECAY', 0.0)
+    
+    base_lr = getattr(cfg, 'LR', getattr(cfg, 'HEAD_LR', 0.0001))
+    backbone_lr = getattr(cfg, 'BACKBONE_LR', None)
+    head_lr = getattr(cfg, 'HEAD_LR', base_lr)
+    
+    if backbone_lr is not None and hasattr(model, 'backbone'):
+        head_params = []
+        backbone_params = []
+        for name, param in model.named_parameters():
+            if 'fc' in name or 'head' in name:
+                head_params.append(param)
+            else:
+                backbone_params.append(param)
+        param_groups = [
+            {'params': backbone_params, 'lr': backbone_lr},
+            {'params': head_params, 'lr': head_lr}
+        ]
+    else:
+        param_groups = model.parameters()
+
     if opt_name == 'adamw':
-        optimizer = optim.AdamW(model.parameters(), lr=cfg.LR, weight_decay=weight_decay)
+        optimizer = optim.AdamW(param_groups, lr=base_lr, weight_decay=weight_decay)
     elif opt_name == 'sgd':
         momentum = getattr(cfg, 'MOMENTUM', 0.9)
-        optimizer = optim.SGD(model.parameters(), lr=cfg.LR, momentum=momentum, weight_decay=weight_decay)
+        optimizer = optim.SGD(param_groups, lr=base_lr, momentum=momentum, weight_decay=weight_decay)
     else:
-        optimizer = optim.Adam(model.parameters(), lr=cfg.LR, weight_decay=weight_decay)
+        optimizer = optim.Adam(param_groups, lr=base_lr, weight_decay=weight_decay)
 
     # Scheduler configuration
     scheduler = None
@@ -307,7 +328,7 @@ def main():
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=factor, patience=patience)
 
     mode_prefix = "multimodal" if is_multimodal else "rgb"
-    save_name = f"{mode_prefix}_{cfg.MODEL_NAME}_imgsize{cfg.IMG_SIZE}_batch{cfg.BATCH_SIZE}_epoch{cfg.EPOCHS}_lr{cfg.LR}.pth"
+    save_name = f"{mode_prefix}_{cfg.MODEL_NAME}_imgsize{cfg.IMG_SIZE}_batch{cfg.BATCH_SIZE}_epoch{cfg.EPOCHS}_lr{base_lr}.pth"
     save_path = os.path.join(cfg.CHECKPOINT_DIR, save_name)
     
     # 5. Training
@@ -327,6 +348,8 @@ def main():
         log_batch_every=getattr(cfg, 'LOG_BATCH_EVERY_N', 0),
         log_confusion_every=getattr(cfg, 'LOG_CONFUSION_EVERY_N', 1),
         unfreeze_epoch=unfreeze_epoch,
+        early_stopping_patience=getattr(cfg, 'EARLY_STOPPING_PATIENCE', 0),
+        save_best_metric=getattr(cfg, 'SAVE_BEST_METRIC', 'val_loss'),
     )
     
     history = trainer.train(resume_path=args.resume)

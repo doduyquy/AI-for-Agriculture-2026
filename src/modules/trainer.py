@@ -45,6 +45,8 @@ class Trainer:
         log_batch_every: int = 0,
         log_confusion_every: int = 0,
         unfreeze_epoch: int = 0,
+        early_stopping_patience: int = 0,
+        save_best_metric: str = "val_acc",
     ):
         self.model         = model
         self.train_loader  = train_loader
@@ -61,6 +63,9 @@ class Trainer:
         self.log_batch_every = max(0, int(log_batch_every or 0))
         self.log_confusion_every = max(0, int(log_confusion_every or 0))
         self.unfreeze_epoch = unfreeze_epoch
+        self.early_stopping_patience = early_stopping_patience
+        self.save_best_metric = save_best_metric.lower()
+        self.epochs_without_improvement = 0
 
         self.history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
         self.history_rows = []
@@ -270,15 +275,22 @@ class Trainer:
             self.history["val_acc"].append(val_acc)
 
             # ── Best model ────────────────────────────────────────────────
-            if val_acc is not None:
-                acc_is_better = val_acc > self.best_val_acc
-                acc_is_tied = np.isclose(val_acc, self.best_val_acc)
-                loss_breaks_tie = val_loss is not None and val_loss < self.best_val_loss
-                is_best = acc_is_better or (acc_is_tied and loss_breaks_tie)
+            if val_acc is not None and val_loss is not None:
+                if self.save_best_metric == "val_loss":
+                    is_best = val_loss < self.best_val_loss
+                else: # val_acc default
+                    acc_is_better = val_acc > self.best_val_acc
+                    acc_is_tied = np.isclose(val_acc, self.best_val_acc)
+                    loss_breaks_tie = val_loss < self.best_val_loss
+                    is_best = acc_is_better or (acc_is_tied and loss_breaks_tie)
+
                 if is_best:
                     self.best_val_acc = val_acc
-                    self.best_val_loss = val_loss if val_loss is not None else float("inf")
+                    self.best_val_loss = val_loss
                     self.best_epoch = epoch
+                    self.epochs_without_improvement = 0
+                else:
+                    self.epochs_without_improvement += 1
             else:
                 is_best = train_loss < self.best_train_loss
                 if is_best:
@@ -374,7 +386,12 @@ class Trainer:
             best_mark = "*" if is_best else ""
             val_loss_text = f"{val_loss:.4f}" if val_loss is not None else "   n/a"
             val_acc_text = f"{val_acc:.4f}" if val_acc is not None else "   n/a"
-            best_val_text = f"{self.best_val_acc:.4f}" if self.val_loader is not None else "   n/a"
+            
+            if self.val_loader is not None:
+                best_val_text = f"{self.best_val_loss:.4f}" if self.save_best_metric == "val_loss" else f"{self.best_val_acc:.4f}"
+            else:
+                best_val_text = "   n/a"
+                
             print(
                 f"  {epoch:>5d} | {lr_after:.2e} | {train_loss:>10.4f} |"
                 f" {train_acc:>9.4f} | {val_loss_text:>8} | {val_acc_text:>7} |"
@@ -384,6 +401,11 @@ class Trainer:
                 print(f"        confusion csv: {confusion_paths.get('csv')}")
                 if confusion_paths.get("png"):
                     print(f"        confusion png: {confusion_paths.get('png')}")
+
+            # ── Early Stopping Check ──────────────────────────────────────
+            if self.early_stopping_patience > 0 and self.epochs_without_improvement >= self.early_stopping_patience:
+                print(f"\n  [Early Stopping] No improvement in {self.save_best_metric} for {self.early_stopping_patience} epochs. Stopping at epoch {epoch}.")
+                break
 
         # ── Training complete ──────────────────────────────────────────────
         _header("TRAINING COMPLETE")
