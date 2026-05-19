@@ -7,4 +7,4 @@ LR: 0.0001 # Tốc độ học (Learning Rate)
 VAL_SPLIT: 0.2 # Tách 20% từ train/ làm validation nội bộ; dataset/val vẫn là submission set không nhãn
 SPLIT_MANIFEST_PATH: "splits/seed42_val20/split_manifest.csv" # Đặt null hoặc "" khi muốn final train 100% bằng VAL_SPLIT: 0.0
 LOG_BATCH_EVERY_N: 0 # 0 = log gọn theo epoch; đặt 10 nếu muốn in tiến trình batch
-LOG_CONFUSION_EVERY_N: 1 # Lưu/log confusion matrix mỗi N epoch khi có validation
+LOG_CONFUSION_EVERY_N: 0 # 0 = chỉ lưu confusion matrix cuối cùng bằng best checkpoint; đặt N>0 nếu muốn lưu mỗi N epoch

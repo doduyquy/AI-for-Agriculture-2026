@@ -43,7 +43,7 @@ class Trainer:
         output_dir=None,
         class_names=None,
         log_batch_every: int = 0,
-        log_confusion_every: int = 1,
+        log_confusion_every: int = 0,
     ):
         self.model         = model
         self.train_loader  = train_loader

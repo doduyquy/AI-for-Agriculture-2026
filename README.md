@@ -182,7 +182,6 @@ Use `INPUT_MODE: "rgb"` for RGB-only runs, or `INPUT_MODE: "multimodal"` for HS+
 Kaggle output artifacts are written to `/kaggle/working/outputs/`, including:
 
 - `training_history.csv`
-- `val_epoch_XXX_confusion_matrix.csv/.png`
 - `final_val_classification_report.csv/.json`
 - `final_val_confusion_matrix.csv/.png`
 - `submission.csv`
