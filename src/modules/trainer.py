@@ -45,6 +45,7 @@ class Trainer:
         log_batch_every: int = 0,
         log_confusion_every: int = 0,
         unfreeze_epoch: int = 0,
+        unfreeze_target: str = "all",
         early_stopping_patience: int = 0,
         save_best_metric: str = "val_acc",
     ):
@@ -63,6 +64,7 @@ class Trainer:
         self.log_batch_every = max(0, int(log_batch_every or 0))
         self.log_confusion_every = max(0, int(log_confusion_every or 0))
         self.unfreeze_epoch = unfreeze_epoch
+        self.unfreeze_target = unfreeze_target
         self.early_stopping_patience = early_stopping_patience
         self.save_best_metric = save_best_metric.lower()
         self.epochs_without_improvement = 0
@@ -240,7 +242,13 @@ class Trainer:
 
             # ── Unfreeze backbone if scheduled ──────────────────────────────
             if getattr(self, 'unfreeze_epoch', 0) > 1 and epoch == self.unfreeze_epoch:
-                if hasattr(self.model, 'unfreeze_all'):
+                target = getattr(self, 'unfreeze_target', 'all')
+                if target == 'layer4' and hasattr(self.model, 'unfreeze_layer4'):
+                    _sep()
+                    print(f"  🔓 [Epoch {epoch}] UNFREEZING LAYER4 FOR FINE-TUNING!")
+                    self.model.unfreeze_layer4()
+                    _sep()
+                elif hasattr(self.model, 'unfreeze_all'):
                     _sep()
                     print(f"  🔓 [Epoch {epoch}] UNFREEZING BACKBONE FOR FINE-TUNING!")
                     self.model.unfreeze_all()

@@ -348,6 +348,7 @@ def main():
         log_batch_every=getattr(cfg, 'LOG_BATCH_EVERY_N', 0),
         log_confusion_every=getattr(cfg, 'LOG_CONFUSION_EVERY_N', 1),
         unfreeze_epoch=unfreeze_epoch,
+        unfreeze_target=getattr(cfg, 'UNFREEZE_TARGET', 'all'),
         early_stopping_patience=getattr(cfg, 'EARLY_STOPPING_PATIENCE', 0),
         save_best_metric=getattr(cfg, 'SAVE_BEST_METRIC', 'val_loss'),
     )

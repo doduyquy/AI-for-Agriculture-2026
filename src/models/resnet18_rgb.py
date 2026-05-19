@@ -25,6 +25,13 @@ class Resnet18(nn.Module):
                 param.requires_grad = False
         print("[Model] Backbone frozen – only FC head will be trained.")
 
+    def unfreeze_layer4(self):
+        """Mở đóng băng layer4 và FC, các layer trước vẫn đóng băng."""
+        for name, param in self.backbone.named_parameters():
+            if "layer4" in name or "fc" in name:
+                param.requires_grad = True
+        print("[Model] Layer4 and FC unfrozen.")
+
     def unfreeze_all(self):
         """Mở đóng băng toàn bộ tham số (fine-tune)."""
         for param in self.parameters():
