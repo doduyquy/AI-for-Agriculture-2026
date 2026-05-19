@@ -167,4 +167,14 @@ DATA_DIR=/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20 \
 bash run.sh
 ```
 
+To run RGB-only and skip HS/MS completely:
+
+```bash
+EXTRA_CONFIG=src/configs/experiments/rgb_resnet18_split02.yaml \
+DATA_DIR=/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20 \
+bash run.sh
+```
+
+Use `INPUT_MODE: "rgb"` for RGB-only runs, or `INPUT_MODE: "multimodal"` for HS+MS+RGB late fusion.
+
 Model names are registered in `src/models/__init__.py` with `register_rgb_backbone(...)`.

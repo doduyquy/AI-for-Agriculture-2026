@@ -2,13 +2,13 @@
 
 # ==========================================
 # Run script for AI for Agriculture 2026
-# Late Fusion Multimodal (HS + MS + RGB)
+# Supports multimodal late fusion and RGB-only experiments
 # ==========================================
 
 # Variables
 WANDB_PROJECT="AI-for-Agriculture"
 WANDB_ENTITY="phucga15062005" # Thay bằng username hoặc team name của bạn
-WANDB_RUN_NAME="${WANDB_NAME:-MultimodalLateFusion_$(date '+%Y%m%d-%H%M')}"
+WANDB_RUN_NAME="${WANDB_NAME:-AgricultureRun_$(date '+%Y%m%d-%H%M')}"
 WANDB_API_KEY="${WANDB_API_KEY:-}" # Kaggle: set bằng os.environ['WANDB_API_KEY'] trước khi chạy !bash run.sh
 
 RESUME_PATH="${RESUME_PATH:-}"
@@ -27,10 +27,10 @@ if [ -n "$EXTRA_CONFIG" ]; then
     CONFIG_ARGS+=("$EXTRA_CONFIG")
 fi
 
-echo "Starting multimodal training pipeline..."
+echo "Starting training pipeline..."
 echo "Configs: ${CONFIG_ARGS[*]}"
 
-# 1. Run multimodal training with WandB logging
+# 1. Run training with WandB logging
 python -m src.main \
     --configs "${CONFIG_ARGS[@]}" \
     --wandb \
@@ -54,6 +54,10 @@ python -m src.main \
 
 # 3b. Run an experiment YAML:
 # EXTRA_CONFIG=src/configs/experiments/resnet34_split02.yaml \
+# DATA_DIR=/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20 bash run.sh
+#
+# 3c. Run RGB-only:
+# EXTRA_CONFIG=src/configs/experiments/rgb_resnet18_split02.yaml \
 # DATA_DIR=/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20 bash run.sh
 
 # 4. Resume training from a specific checkpoint:

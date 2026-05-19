@@ -9,6 +9,8 @@ import numpy as np
 
 from src.modules.utils import load_config, set_seed, get_filename_crossplatform, label_from_filename
 from src.modules.dataset import (
+    RGBDataset,
+    RGBTestDataset,
     MultimodalDataset,
     MultimodalTestDataset,
     get_transforms,
@@ -17,7 +19,7 @@ from src.modules.dataset import (
     save_split_audit,
     split_dataset,
 )
-from src.models.model import build_multimodal_model
+from src.models.model import build_model, build_multimodal_model
 from src.modules.trainer import Trainer
 from src.modules.evaluate import Evaluator
 from src.modules.inference import Inferencer
@@ -98,6 +100,20 @@ def main():
     set_seed(cfg.SEED)
     device = cfg.device
     print(f"Using device: {device}")
+
+    input_mode = str(getattr(cfg, "INPUT_MODE", "multimodal")).lower().replace("-", "_")
+    if input_mode in {"rgb", "rgb_only", "single_rgb"}:
+        is_multimodal = False
+        mode_label = "RGB-only"
+    elif input_mode in {"multimodal", "late_fusion", "hs_ms_rgb"}:
+        is_multimodal = True
+        mode_label = "Multimodal Late Fusion (HS + MS + RGB)"
+    else:
+        raise ValueError(
+            f"INPUT_MODE không hợp lệ: {input_mode}. "
+            "Dùng 'rgb' hoặc 'multimodal'."
+        )
+    print(f"[Mode] {mode_label}")
     
     # 2. Data Preparation
     tfm_train, tfm_val = get_transforms(cfg)
@@ -156,7 +172,7 @@ def main():
     train_ms = getattr(cfg, 'TRAIN_MS_DIR', os.path.join(cfg.TRAIN_DIR, 'MS') if hasattr(cfg, 'TRAIN_DIR') else train_rgb.replace('RGB', 'MS'))
     validation_hs = getattr(cfg, 'VALIDATION_HS_DIR', None)
     validation_ms = getattr(cfg, 'VALIDATION_MS_DIR', None)
-    if use_physical_validation:
+    if use_physical_validation and is_multimodal:
         for name, path in {
             "VALIDATION_HS_DIR": validation_hs,
             "VALIDATION_MS_DIR": validation_ms,
@@ -164,21 +180,53 @@ def main():
             if not path or not os.path.exists(path):
                 raise FileNotFoundError(f"Không tìm thấy {name}: {path}")
 
-    train_ds = MultimodalDataset(train_hs, train_ms, train_rgb, transform=tfm_train,
-                                 file_list=train_files, class_to_idx=class_to_idx)
+    if is_multimodal:
+        train_ds = MultimodalDataset(
+            train_hs,
+            train_ms,
+            train_rgb,
+            transform=tfm_train,
+            file_list=train_files,
+            class_to_idx=class_to_idx,
+        )
+    else:
+        train_ds = RGBDataset(
+            train_rgb,
+            transform=tfm_train,
+            file_list=train_files,
+            class_to_idx=class_to_idx,
+        )
+
     val_ds = None
     if val_files:
         val_rgb_dir = validation_rgb if use_physical_validation else train_rgb
-        val_hs_dir = validation_hs if use_physical_validation else train_hs
-        val_ms_dir = validation_ms if use_physical_validation else train_ms
-        val_ds = MultimodalDataset(val_hs_dir, val_ms_dir, val_rgb_dir, transform=tfm_val,
-                                   file_list=val_files, class_to_idx=class_to_idx)
+        if is_multimodal:
+            val_hs_dir = validation_hs if use_physical_validation else train_hs
+            val_ms_dir = validation_ms if use_physical_validation else train_ms
+            val_ds = MultimodalDataset(
+                val_hs_dir,
+                val_ms_dir,
+                val_rgb_dir,
+                transform=tfm_val,
+                file_list=val_files,
+                class_to_idx=class_to_idx,
+            )
+        else:
+            val_ds = RGBDataset(
+                val_rgb_dir,
+                transform=tfm_val,
+                file_list=val_files,
+                class_to_idx=class_to_idx,
+            )
 
     # 2.2 Submission test set (val/{RGB,HS,MS}/ — đủ cả 3 modality, không có label)
     if test_rgb and os.path.exists(test_rgb):
-        test_hs = getattr(cfg, 'TEST_HS_DIR', test_rgb.replace('RGB', 'HS'))
-        test_ms = getattr(cfg, 'TEST_MS_DIR', test_rgb.replace('RGB', 'MS'))
-        test_ds = MultimodalTestDataset(test_hs, test_ms, test_rgb, transform=tfm_val)
+        if is_multimodal:
+            test_hs = getattr(cfg, 'TEST_HS_DIR', test_rgb.replace('RGB', 'HS'))
+            test_ms = getattr(cfg, 'TEST_MS_DIR', test_rgb.replace('RGB', 'MS'))
+            test_ds = MultimodalTestDataset(test_hs, test_ms, test_rgb, transform=tfm_val)
+        else:
+            test_ds = RGBTestDataset(test_rgb, transform=tfm_val)
     else:
         print("[WARN] TEST_RGB_DIR chưa được cấu hình → bỏ qua bước inference.")
         test_ds = None
@@ -188,6 +236,7 @@ def main():
     val_loader   = DataLoader(val_ds,   batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=0) if val_ds else None
     test_loader  = DataLoader(test_ds,  batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=0) if test_ds else None
 
+    print(f"[Data] Mode          : {mode_label}")
     print(f"[Data] TRAIN_RGB_DIR : {train_rgb}")
     print(f"[Data] TEST_RGB_DIR  : {test_rgb or '(không có)'}")
     print(f"[Data] Val split     : {val_split*100:.0f}%  |  "
@@ -196,7 +245,15 @@ def main():
     print(f"[Data] Classes       : {class_to_idx}")
     
     # 3. Model Definition
-    model = build_multimodal_model(cfg=cfg, device=device)
+    if is_multimodal:
+        model = build_multimodal_model(cfg=cfg, device=device)
+    else:
+        model = build_model(
+            cfg=cfg,
+            device=device,
+            pretrained=getattr(cfg, 'RGB_PRETRAINED', True),
+            dropout_p=getattr(cfg, 'DROPOUT_P', 0.0),
+        )
 
     # 4. Training Setup
     criterion = nn.CrossEntropyLoss()
@@ -205,7 +262,8 @@ def main():
     if val_loader is not None:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
 
-    save_name = f"multimodal_{cfg.MODEL_NAME}_imgsize{cfg.IMG_SIZE}_batch{cfg.BATCH_SIZE}_epoch{cfg.EPOCHS}_lr{cfg.LR}.pth"
+    mode_prefix = "multimodal" if is_multimodal else "rgb"
+    save_name = f"{mode_prefix}_{cfg.MODEL_NAME}_imgsize{cfg.IMG_SIZE}_batch{cfg.BATCH_SIZE}_epoch{cfg.EPOCHS}_lr{cfg.LR}.pth"
     save_path = os.path.join(cfg.CHECKPOINT_DIR, save_name)
     
     # 5. Training
@@ -219,7 +277,7 @@ def main():
         device=device,
         save_path=save_path,
         epochs=cfg.EPOCHS,
-        is_multimodal=True,
+        is_multimodal=is_multimodal,
     )
     
     history = trainer.train(resume_path=args.resume)
@@ -228,14 +286,14 @@ def main():
     class_names = [train_ds.idx_to_class[i] for i in range(len(class_to_idx))]
     y_true, y_pred, report_dict = None, None, {}
     if val_loader is not None:
-        evaluator = Evaluator(model, val_loader, device, class_names, is_multimodal=True)
+        evaluator = Evaluator(model, val_loader, device, class_names, is_multimodal=is_multimodal)
         y_true, y_pred, report_dict = evaluator.evaluate(model_path=save_path)
     else:
         print("[INFO] Không có labeled validation split → bỏ qua classification report.")
 
     # 7. Inference (trên submission set — val/{RGB,HS,MS}/ không nhãn)
     if test_loader is not None:
-        inferencer = Inferencer(model, test_loader, device, train_ds.idx_to_class, is_multimodal=True)
+        inferencer = Inferencer(model, test_loader, device, train_ds.idx_to_class, is_multimodal=is_multimodal)
         submission_path = os.path.join(cfg.ROOT_DIR, "submission.csv")
         inferencer.predict(model_path=save_path, output_csv=submission_path)
     else:

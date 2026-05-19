@@ -1,0 +1,16 @@
+# RGB-only baseline on the fixed seed42_val20 split.
+#
+# Kaggle:
+# EXTRA_CONFIG=src/configs/experiments/rgb_resnet18_split02.yaml \
+# DATA_DIR=/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20 \
+# bash run.sh
+
+INPUT_MODE: "rgb"
+MODEL_NAME: "resnet18"
+RGB_PRETRAINED: true
+DROPOUT_P: 0.2
+
+BATCH_SIZE: 32
+EPOCHS: 20
+LR: 0.0001
+SPLIT_MANIFEST_PATH: "splits/seed42_val20/split_manifest.csv"
