@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, List
 import torchvision.models as tv_models
 
 from src.models.resnet18_rgb import Resnet18
+from src.models.resnet_34_rgb import Resnet34
 
 
 @dataclass(frozen=True)
@@ -83,3 +84,4 @@ register_rgb_backbone(
 
 # Custom full models.
 register_model("resnet18_rgb", Resnet18)
+register_model("resnet34_rgb", Resnet34)
