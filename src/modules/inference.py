@@ -65,8 +65,10 @@ class Inferencer:
                 preds = outputs.argmax(dim=1).cpu().numpy()
 
                 for fname, p in zip(fnames, preds):
+                    # Đổi extension sang .tif cho submission format
+                    base = os.path.splitext(fname)[0]
                     results.append({
-                        "filename": fname,
+                        "filename": base + ".tif",
                         "label": self.idx_to_class[p],
                     })
 
