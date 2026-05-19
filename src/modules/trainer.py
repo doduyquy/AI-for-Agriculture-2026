@@ -253,13 +253,11 @@ class Trainer:
             epoch_time = time.time() - epoch_t0
             total_train_time += epoch_time
 
-            best_tag = "  ⭐ NEW BEST" if is_best else ""
+            best_tag = " ⭐ NEW BEST" if is_best else ""
             print(
-                f"\n  ┌─ Epoch {epoch:02d} Summary {'─'*42}┐\n"
-                f"  │  train_loss = {train_loss:.4f}   train_acc = {train_acc:.4f}           │\n"
-                f"  │  val_loss   = {val_loss:.4f}   val_acc   = {val_acc:.4f}{best_tag:<13}│\n"
-                f"  │  time       = {epoch_time:.1f}s   best_val_acc = {self.best_val_acc:.4f}         │\n"
-                f"  └{'─'*55}┘"
+                f"\n  [Epoch {epoch:02d} Summary] Time: {epoch_time:.1f}s\n"
+                f"   - Train : loss={train_loss:.4f}, acc={train_acc:.4f}\n"
+                f"   - Val   : loss={val_loss:.4f}, acc={val_acc:.4f}{best_tag} (best: {self.best_val_acc:.4f})\n"
             )
 
         # ── Training complete ──────────────────────────────────────────────
