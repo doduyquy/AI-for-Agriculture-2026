@@ -44,6 +44,7 @@ class Trainer:
         class_names=None,
         log_batch_every: int = 0,
         log_confusion_every: int = 0,
+        unfreeze_epoch: int = 0,
     ):
         self.model         = model
         self.train_loader  = train_loader
@@ -59,6 +60,7 @@ class Trainer:
         self.class_names   = class_names
         self.log_batch_every = max(0, int(log_batch_every or 0))
         self.log_confusion_every = max(0, int(log_confusion_every or 0))
+        self.unfreeze_epoch = unfreeze_epoch
 
         self.history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
         self.history_rows = []
@@ -230,6 +232,14 @@ class Trainer:
         for epoch in range(start_epoch, self.epochs + 1):
             epoch_t0 = time.time()
             lr_before = self._current_lr()
+
+            # ── Unfreeze backbone if scheduled ──────────────────────────────
+            if getattr(self, 'unfreeze_epoch', 0) > 1 and epoch == self.unfreeze_epoch:
+                if hasattr(self.model, 'unfreeze_all'):
+                    _sep()
+                    print(f"  🔓 [Epoch {epoch}] UNFREEZING BACKBONE FOR FINE-TUNING!")
+                    self.model.unfreeze_all()
+                    _sep()
 
             train_loss, train_acc = self.train_one_epoch(epoch)
 

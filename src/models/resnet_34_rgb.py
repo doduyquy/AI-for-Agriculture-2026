@@ -29,6 +29,19 @@ class Resnet34(nn.Module):
     def forward(self, x):
         return self.backbone(x)
 
+    def freeze_backbone(self):
+        """Đóng băng toàn bộ backbone, chỉ train FC head."""
+        for name, param in self.backbone.named_parameters():
+            if "fc" not in name:
+                param.requires_grad = False
+        print("[Model] Backbone frozen – only FC head will be trained.")
+
+    def unfreeze_all(self):
+        """Mở đóng băng toàn bộ tham số (fine-tune)."""
+        for param in self.parameters():
+            param.requires_grad = True
+        print("[Model] All parameters unfrozen.")
+
 
 def main():
     model = Resnet34(

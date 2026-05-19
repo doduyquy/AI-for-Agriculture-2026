@@ -267,6 +267,13 @@ def main():
             dropout_p=getattr(cfg, 'DROPOUT_P', 0.0),
         )
 
+    unfreeze_epoch = getattr(cfg, 'UNFREEZE_EPOCH', 0)
+    if unfreeze_epoch > 1:
+        if hasattr(model, 'freeze_backbone'):
+            model.freeze_backbone()
+        else:
+            print("[WARN] Model does not have freeze_backbone method. Cannot perform two-stage fine-tuning.")
+
     # 4. Training Setup
     criterion = nn.CrossEntropyLoss()
     
@@ -319,6 +326,7 @@ def main():
         class_names=class_names,
         log_batch_every=getattr(cfg, 'LOG_BATCH_EVERY_N', 0),
         log_confusion_every=getattr(cfg, 'LOG_CONFUSION_EVERY_N', 1),
+        unfreeze_epoch=unfreeze_epoch,
     )
     
     history = trainer.train(resume_path=args.resume)
