@@ -20,3 +20,7 @@ wandb/
 misc/
 
 eda/
+*.png
+*.tif
+*.tiff
+data_split/
