@@ -27,6 +27,7 @@ from src.modules.inference import Inferencer
 from src.modules.reporting import (
     save_classification_report_artifacts,
     save_confusion_matrix_artifacts,
+    log_experiment_to_csv,
 )
 
 
@@ -384,8 +385,48 @@ def main():
         print("[Output] Final validation artifacts:")
         for path in eval_artifact_paths.values():
             print(f"  - {path}")
+            
+        # Log experiment details to CSV
+        val_acc = report_dict.get("accuracy", trainer.best_val_acc)
+        val_f1 = report_dict.get("macro avg", {}).get("f1-score", "")
+        best_epoch = trainer.best_epoch
+        
+        lr_first = trainer.history_rows[0]["lr"] if len(trainer.history_rows) > 0 else getattr(cfg, "LR", 0.0)
+        lr_after = trainer.history_rows[trainer.best_epoch - 1]["lr"] if (len(trainer.history_rows) >= trainer.best_epoch and trainer.best_epoch > 0) else lr_first
+        
+        metrics = {
+            "val_acc": val_acc,
+            "val_f1": val_f1,
+            "best_epoch": best_epoch,
+            "lr_first": lr_first,
+            "lr_after": lr_after,
+        }
+        
+        cm_png_path = eval_artifact_paths.get("confusion_png", "")
+        if cm_png_path:
+            cm_png_path = os.path.relpath(cm_png_path, getattr(cfg, "ROOT_DIR", "."))
+            
+        csv_log_path = os.path.join(getattr(cfg, "ROOT_DIR", "."), "experiments.csv")
+        log_experiment_to_csv(csv_log_path, cfg, metrics, cm_png_path)
+        print(f"[Output] Experiment logged to {csv_log_path}")
     else:
         print("[INFO] Không có labeled validation split → bỏ qua classification report.")
+        
+        # Log experiment details anyway (without validation metrics)
+        lr_first = trainer.history_rows[0]["lr"] if len(trainer.history_rows) > 0 else getattr(cfg, "LR", 0.0)
+        lr_after = trainer.history_rows[trainer.best_epoch - 1]["lr"] if (len(trainer.history_rows) >= trainer.best_epoch and trainer.best_epoch > 0) else lr_first
+        
+        metrics = {
+            "val_acc": "",
+            "val_f1": "",
+            "best_epoch": trainer.best_epoch,
+            "lr_first": lr_first,
+            "lr_after": lr_after,
+        }
+        
+        csv_log_path = os.path.join(getattr(cfg, "ROOT_DIR", "."), "experiments.csv")
+        log_experiment_to_csv(csv_log_path, cfg, metrics, "")
+        print(f"[Output] Experiment logged to {csv_log_path}")
 
     # 7. Inference (trên submission set — val/{RGB,HS,MS}/ không nhãn)
     if test_loader is not None:
