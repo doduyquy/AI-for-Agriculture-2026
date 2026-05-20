@@ -1,0 +1,15 @@
+# Stronger RGB backbone, same fixed split.
+
+MODEL_NAME: "resnet34"
+RGB_PRETRAINED: true
+
+MS_OUT_FEATURES: 256
+HS_OUT_FEATURES: 256
+DROPOUT_P: 0.35
+FUSION_HIDDEN: 512
+
+BATCH_SIZE: 8
+EPOCHS: 20
+LR: 0.0001
+
+SPLIT_MANIFEST_PATH: "splits/seed42_val20/split_manifest.csv"

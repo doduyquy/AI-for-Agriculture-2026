@@ -16,7 +16,20 @@ class ConfigDict(dict):
 
     @property
     def device(self):
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        requested = str(self.get("DEVICE", "auto")).strip().lower()
+        if requested in {"", "auto"}:
+            return "cuda" if torch.cuda.is_available() else "cpu"
+
+        if requested.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError(
+                "Config đang yêu cầu DEVICE='cuda' nhưng PyTorch không thấy GPU. "
+                "Trên Kaggle hãy bật Settings -> Accelerator -> GPU rồi chạy lại notebook."
+            )
+
+        if requested in {"cpu"} or requested.startswith("cuda"):
+            return requested
+
+        raise ValueError("DEVICE chỉ hỗ trợ 'auto', 'cpu', hoặc 'cuda'.")
 
 def load_config(config_paths):
     """Load configuration from one or multiple YAML files"""

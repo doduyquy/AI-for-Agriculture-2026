@@ -1,6 +1,10 @@
 # Training hyperparameters
+DEVICE: "auto" # "auto" tự dùng cuda nếu có; đặt "cuda" để bắt buộc chạy GPU
 SEED: 42 # Hạt giống ngẫu nhiên để đảm bảo tính lặp lại
 BATCH_SIZE: 8 # Số lượng mẫu trong một batch
 EPOCHS: 20 # Số vòng lặp qua toàn bộ tập dữ liệu huấn luyện
 LR: 0.0001 # Tốc độ học (Learning Rate)
-VAL_SPLIT: 0.2 # Tỉ lệ chia tập dữ liệu cho validation (20%)
+VAL_SPLIT: 0.2 # Tách 20% từ train/ làm validation nội bộ; dataset/val vẫn là submission set không nhãn
+SPLIT_MANIFEST_PATH: "splits/seed42_val20/split_manifest.csv" # Đặt null hoặc "" khi muốn final train 100% bằng VAL_SPLIT: 0.0
+LOG_BATCH_EVERY_N: 0 # 0 = log gọn theo epoch; đặt 10 nếu muốn in tiến trình batch
+LOG_CONFUSION_EVERY_N: 0 # 0 = chỉ lưu confusion matrix cuối cùng bằng best checkpoint; đặt N>0 nếu muốn lưu mỗi N epoch
