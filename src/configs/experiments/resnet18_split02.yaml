@@ -1,0 +1,17 @@
+# Baseline fixed-split experiment.
+# Uses train/validation/val from datasets-split02/seed42_val20.
+
+MODEL_NAME: "resnet18"
+RGB_PRETRAINED: true
+
+MS_OUT_FEATURES: 256
+HS_OUT_FEATURES: 256
+DROPOUT_P: 0.3
+FUSION_HIDDEN: 512
+
+BATCH_SIZE: 8
+EPOCHS: 20
+LR: 0.0001
+
+# Keep this for fair model comparisons.
+SPLIT_MANIFEST_PATH: "splits/seed42_val20/split_manifest.csv"

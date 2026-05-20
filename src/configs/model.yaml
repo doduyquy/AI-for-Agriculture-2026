@@ -1,4 +1,5 @@
 # Model hyperparameters
+INPUT_MODE: "multimodal" # "multimodal" = HS+MS+RGB late fusion, "rgb" = chỉ dùng RGB
 NUM_CLASSES: 3        # Số lượng lớp (class) cần phân loại
 MODEL_NAME: "resnet18" # Tên ResNet variant cho RGB branch (resnet18/34/50/101)
 

@@ -68,8 +68,8 @@ class Inferencer:
                     # Đổi extension sang .tif cho submission format
                     base = os.path.splitext(fname)[0]
                     results.append({
-                        "filename": base + ".tif",
-                        "label": self.idx_to_class[p],
+                        "Id": base + ".tif",
+                        "Category": self.idx_to_class[p],
                     })
 
         df = pd.DataFrame(results)

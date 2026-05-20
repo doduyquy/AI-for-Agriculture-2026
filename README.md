@@ -74,7 +74,7 @@ Modify files in `src/configs/` before running:
 | Config File | Purpose | Key Parameters |
 | :--- | :--- | :--- |
 | `paths.yaml` | Directory paths | `ROOT_DIR`, `TRAIN_RGB_DIR`, `TEST_RGB_DIR`, `CHECKPOINT_DIR` |
-| `train.yaml` | Training settings | `LR`, `BATCH_SIZE`, `EPOCHS`, `SEED` |
+| `train.yaml` | Training settings | `LR`, `BATCH_SIZE`, `EPOCHS`, `SEED`, `VAL_SPLIT`, `SPLIT_MANIFEST_PATH` |
 | `dataset.yaml` | Data pipeline | Transforms, augmentations |
 | `model.yaml` | Architecture | `MODEL_NAME`, `IMG_SIZE`, `NUM_CLASSES` |
 
@@ -126,6 +126,64 @@ python -m src.main --resume "checkpoints/your_checkpoint.pth"
 
 ## Pipeline Flow
 
-1. **Training:** Model learns and saves weights to `CHECKPOINT_DIR`.
-2. **Evaluation:** Best weights evaluate the Validation set. Metrics are logged to WandB.
-3. **Inference:** Predictions run on the Test set, generating `submission.csv` at the root.
+1. **Training:** Model learns from the labeled `train/` split and saves weights to `CHECKPOINT_DIR`.
+2. **Internal Evaluation:** By default, `SPLIT_MANIFEST_PATH` points to a fixed 80/20 split. The competition `val/` folder is not used for training or validation.
+3. **Submission Inference:** Predictions run on the unlabeled competition `val/` split, generating `submission.csv` at the root.
+4. **Final Submit Mode:** After choosing a config, set `SPLIT_MANIFEST_PATH: null` and `VAL_SPLIT: 0.0` to train on 100% of labeled `train/` before generating the final submission.
+
+The default training config uses a fixed split manifest at `splits/seed42_val20/split_manifest.csv`, so experiments reuse the same internal train/validation files. Each run also writes `split_manifest.csv` and `split_summary.csv` to the output directory so the active split can be checked.
+
+On Kaggle, the fixed-split training command is:
+
+```bash
+DATA_DIR=/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20 bash run.sh
+```
+
+The run writes the submission file to `/kaggle/working/submission.csv`.
+
+To materialize the fixed split into physical folders first:
+
+```bash
+python src/tools/create_fixed_split_dataset.py \
+  --data_dir /kaggle/input/datasets/nadkli/data-agriculture/dataset \
+  --manifest splits/seed42_val20/split_manifest.csv \
+  --output_dir /kaggle/working/data_split/seed42_val20 \
+  --overwrite
+```
+
+Then train from the physical split while keeping the original competition `val/` untouched for submission:
+
+```bash
+DATA_DIR=/kaggle/working/data_split/seed42_val20 bash run.sh
+```
+
+If you upload the materialized split as a Kaggle Dataset, point `DATA_DIR` to that uploaded dataset folder. It should contain `train/`, `validation/`, and `val/`.
+
+To run a model experiment YAML:
+
+```bash
+EXTRA_CONFIG=src/configs/experiments/resnet34_split02.yaml \
+DATA_DIR=/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20 \
+bash run.sh
+```
+
+To run RGB-only and skip HS/MS completely:
+
+```bash
+EXTRA_CONFIG=src/configs/experiments/rgb_resnet18_split02.yaml \
+DATA_DIR=/kaggle/input/datasets/lhngphc/datasets-split02/seed42_val20 \
+bash run.sh
+```
+
+On Kaggle, turn on `Settings -> Accelerator -> GPU` before running GPU configs. The RGB experiment sets `DEVICE: "cuda"`, so it will stop early if the notebook is still on CPU.
+
+Use `INPUT_MODE: "rgb"` for RGB-only runs, or `INPUT_MODE: "multimodal"` for HS+MS+RGB late fusion.
+
+Kaggle output artifacts are written to `/kaggle/working/outputs/`, including:
+
+- `training_history.csv`
+- `final_val_classification_report.csv/.json`
+- `final_val_confusion_matrix.csv/.png`
+- `submission.csv`
+
+Model names are registered in `src/models/__init__.py` with `register_rgb_backbone(...)`.

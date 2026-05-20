@@ -1,0 +1,15 @@
+# Larger RGB backbone. Use this if GPU memory/time allows.
+
+MODEL_NAME: "resnet50"
+RGB_PRETRAINED: true
+
+MS_OUT_FEATURES: 256
+HS_OUT_FEATURES: 256
+DROPOUT_P: 0.4
+FUSION_HIDDEN: 512
+
+BATCH_SIZE: 8
+EPOCHS: 20
+LR: 0.00008
+
+SPLIT_MANIFEST_PATH: "splits/seed42_val20/split_manifest.csv"
